@@ -2,7 +2,7 @@
 
 箱装辣白菜的**可选** SillyTavern 服务器插件，与 [前端扩展](https://github.com/Yuyayun/boxed-lllllabc) 分仓库、独立安装和更新。只装前端即可使用 IndexedDB；安装本插件不会切换存储方式或迁移任何前端数据。
 
-当前版本 `1.0.0-dev.2`，存储协议 `2`，SQLite schema `2`。这是分阶段开发版本：P3 已提供显式双向存储切换和清空旧端，聊天快照尚待 P4，完整发布验收尚未结束。不要在日常数据上试验迁移或清理。
+当前版本 `1.0.0-dev.3`，存储协议 `3`，SQLite schema `3`。P4 已提供聊天快照模型，支持创建、管理和原生保存核对；完整发布验收尚未结束。只在独立测试环境验收此开发版本。
 
 ## 运行条件
 
@@ -36,13 +36,13 @@ boxedLllllabc:
 
 - 同源路由 `/api/plugins/boxed-lllllabc/status`、`/operation` 和 `/transfer`，只接受已定义的备份操作。写请求必须有酒馆原生 CSRF 头；不接受任意 SQL、文件路径或客户端 `isSingleUser` 声明。
 - `GET /status` 返回协议、可写状态、记录统计和 SQLite 自身文件/WAL/SHM 占用，不使用浏览器配额充当服务器空间。
-- `POST /operation` 请求 `{ protocol: 2, operation, args }`。`args` 使用前后端共用的无损标记编码；返回 `{ok, protocol, value}`，失败则为非 2xx `{ok:false, protocol, code, reason}`。前端客户端位于前端仓库 `src/storage/sqlite-client.js`。
+- `POST /operation` 请求 `{ protocol: 3, operation, args }`。`args` 使用前后端共用的无损标记编码；返回 `{ok, protocol, value}`，失败则为非 2xx `{ok:false, protocol, code, reason}`。前端客户端位于前端仓库 `src/storage/sqlite-client.js`。
 - 仅开放业务操作，不提供直接删除 pending 的接口。清理指纹、冻结/待确认保护和身份迁移使用与 IndexedDB 相同的事务规则。
 - Date、undefined、null、多 swipe、嵌套字段等无损保存。循环引用或不支持的值明确失败，禁止 JSON 静默丢字段。
 - SQLite 在**同进程工作线程**中运行，不另启 Node 服务；串行执行、有界队列 32、忙等待 1 秒、WAL、FULL 同步、每操作事务。请求中断的取消标记在提交前检查；pending 还会复核原记录内容。
 - 单请求上限 16 MiB、单记录 8 MiB；普通业务读取上限 25,000 行/32 MiB，响应上限 32 MiB。超限明确拒绝，不丢记录。切换使用每页最多 100 条/约 2 MiB（单条较大时单独一页），不走有过滤的全局目录。全局目录分页及完整压力验收仍待后续阶段。
 - 超时或工作线程崩溃返回“结果未知/不可用”，不声称写入成功。请重读确认，检查日志后重启插件；不自动切换存储。
-- 新库有应用标识和 schema 版本。已识别箱装旧库 0/1→2 前先做一致备份，再事务升级；损坏、未知或未来版本不覆盖为空库，不提供任意 SQLite 导入。
+- 新库有应用标识和 schema 版本。已识别箱装旧库 0/1/2→3 前先做一致备份，再事务升级；损坏、未知或未来版本不覆盖为空库，不提供任意 SQLite 导入。
 - 权限错误、只读、锁占用、满盘及坏记录均拒绝相应操作。无法保证同进程插件的绝对物理隔离，也不宣称零性能影响。
 
 ## 更新、停用与卸载
@@ -53,9 +53,17 @@ boxedLllllabc:
 
 不提供“卸载时清空数据库”的行为。用户主动清空非活动端须在前端独立确认，使用经过校验的空暂存区事务替换，并读回确认；不删除数据库文件或用户设置。
 
+## 聊天快照（P4）
+
+协议 3 新增 `beginSnapshot`、`appendSnapshotMessages`、`publishSnapshot`、`getSnapshotHeader`、`getSnapshotMessages`、`listSnapshots`、`renameSnapshot`、`deleteSnapshot` 等受限业务操作。存档信息位于 `snapshots`，逐楼层正文位于 `snapshot_messages`，与普通备份分离。正文按条校验摘要，所有楼层完整后才发布；读取/恢复前再次校验完整性。管理列表可明确显示并删除未完成存档，不能恢复未完成存档。重命名仅改名称，不提供修改已发布正文的接口。
+
+快照包含在完整切换的数量、主键、关联和内容摘要校验中，也包含在明确确认的非活动端清空中；普通备份清理不涉及快照。Rename 仅更新存档所属逻辑聊天，正文 ID 与内容保持不变。分批写入和分页读取沿用每次约 2 MiB、单记录 8 MiB 的限制；过大记录拒绝，不截断消息。
+
+快照恢复由前端走酒馆原生聊天保存路径，本插件只负责箱装数据存储。只有实际保存内容核对一致才确认成功；失败时保留带元数据保存证明的保护记录与源快照，不靠界面变化认定保存完成。schema 0/1/2 升级到 3 前生成一致备份，未知/未来版本不会被覆盖。安装本插件仍不自动切换或迁移。
+
 ## 切换与中断恢复
 
-前端设置中通过「切换存储方式」明确确认覆盖目标端。`POST /transfer` 仅接受 `{protocol:2, action, args}`；action 限定为 status/source/prepare/append/page/seal/check/commit/rollback/finish。两端均保留持久任务锁；目标原数据在最终激活前保留事务回滚副本。普通读写在任务锁释放前拒绝执行，不自动回退到 IndexedDB。
+前端设置中通过「切换存储方式」明确确认覆盖目标端。`POST /transfer` 仅接受 `{protocol:3, action, args}`；action 限定为 status/source/prepare/append/page/seal/check/commit/rollback/finish。两端均保留持久任务锁；目标原数据在最终激活前保留事务回滚副本。普通读写在任务锁释放前拒绝执行，不自动回退到 IndexedDB。
 
 活动端和恢复日志由当前浏览器独立控制库保存，服务端保留提交回执。重启后，尚未持久激活的操作回滚原目标；已激活的操作完成收尾。后端失联时保留锁和日志，在恢复连接后重试。不要手动删除锁、暂存表或浏览器控制库来跳过恢复。成功后来源原副本继续保留，不同步、不双写。任务使用临时空间；配额、磁盘或读回校验失败会拒绝切换。
 

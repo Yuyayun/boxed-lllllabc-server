@@ -76,7 +76,7 @@ export function rekeyBackupRecord(record, targetKey, type) {
     chatKey: targetKey,
   };
   if (type === "pending") {
-    const suffix = record?.messageIndex === null ? "structural" : record?.messageIndex;
+    const suffix = record.snapshotSaveProof ? "snapshot-restore" : record?.messageIndex === null ? "structural" : record?.messageIndex;
     next.id = `${targetKey}:${suffix}`;
   }
   return next;

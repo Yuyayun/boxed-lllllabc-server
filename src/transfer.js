@@ -88,7 +88,7 @@ export function installTransfer(repository) {
             continue;
           }
           if (row.n !== state.written + 1) throw new Error('切换批次序号不连续。');
-          db.prepare("INSERT INTO transfer_rows VALUES(?,'data',?,?,?,?,?)").run(id,row.n,row.store,JSON.stringify(row.key),row.value.chatKey,encode(row.value));
+          db.prepare("INSERT INTO transfer_rows VALUES(?,'data',?,?,?,?,?)").run(id,row.n,row.store,JSON.stringify(row.key),row.store==='snapshot_messages'?row.value.snapshotId:row.value.chatKey,encode(row.value));
           state.written = row.n;
         }
         save(id,state); return { written:state.written };

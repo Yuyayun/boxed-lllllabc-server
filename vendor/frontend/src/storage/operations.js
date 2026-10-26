@@ -154,6 +154,7 @@ export function createBackupOperations({ runTransaction, requestToPromise }) {
     }
 
     const storeNames = [
+      STORES.snapshots,
       STORES.chatMeta,
       STORES.recentMessages,
       STORES.pendingChanges,
@@ -195,6 +196,7 @@ export function createBackupOperations({ runTransaction, requestToPromise }) {
     }
 
     const storeNames = [
+      STORES.snapshots,
       STORES.chatMeta,
       STORES.recentMessages,
       STORES.pendingChanges,
@@ -258,6 +260,11 @@ export function createBackupOperations({ runTransaction, requestToPromise }) {
     }
 
     const sourceMeta = metas.find((meta) => meta.chatKey === sourceKey);
+    // Snapshot IDs and immutable message rows stay unchanged during Rename.
+    const snapshots = stores.get(STORES.snapshots);
+    for (const header of await requestToPromise(snapshots.index("by_chat").getAll(sourceKey))) {
+      await requestToPromise(snapshots.put({ ...header, chatKey: targetKey }));
+    }
     const targetMeta = metas.find((meta) => meta.chatKey === targetKey);
     await requestToPromise(metaStore.put({
       ...mergeIdentityMeta(mergeIdentityMeta(sourceMeta, targetMeta), identity.meta),
@@ -528,6 +535,7 @@ export function createBackupOperations({ runTransaction, requestToPromise }) {
       chatLength: Number.isInteger(record.chatLength) ? record.chatLength : null,
       createdAt: record.createdAt ?? "",
       updatedAt: record.updatedAt ?? "",
+      ...(record.snapshotSaveProof ? { snapshotSaveProof: record.snapshotSaveProof } : {}),
     });
   }
 

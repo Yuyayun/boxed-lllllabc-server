@@ -4,8 +4,10 @@ import { createBackupOperations } from '../vendor/frontend/src/storage/operation
 import { STORAGE_OPERATIONS, encodeStorageValue, decodeStorageValue } from '../vendor/frontend/src/storage/protocol.js';
 import { failure } from './errors.js';
 import { installTransfer } from './transfer.js';
+import { createSnapshotOperations } from '../vendor/frontend/src/storage/snapshot-operations.js';
+import { DATA_STORES } from '../vendor/frontend/src/storage/transfer-format.js';
 
-const STORES = ['chat_meta', 'recent_messages', 'pending_changes', 'full_messages', 'historical_changes'];
+const STORES = DATA_STORES;
 const APP_ID = 0x424f5844;
 const MAX_BYTES = 32 * 1024 * 1024;
 const MAX_ROWS = 25000;
@@ -20,24 +22,30 @@ export class SqliteRepository {
       const version = this.db.prepare('PRAGMA user_version').get().user_version;
       const appId = this.db.prepare('PRAGMA application_id').get().application_id;
       const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
-      if (version < 0 || version > 2 || (appId && appId !== APP_ID) || (tables.length && appId !== APP_ID) || (version && appId !== APP_ID)) throw failure('database-unavailable', 'SQLite 不属于兼容的箱装数据库，未覆盖原文件。');
+      if (version < 0 || version > 3 || (appId && appId !== APP_ID) || (tables.length && appId !== APP_ID) || (version && appId !== APP_ID)) throw failure('database-unavailable', 'SQLite 不属于兼容的箱装数据库，未覆盖原文件。');
       if (!readOnly) {
         this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA wal_autocheckpoint=1000;');
-        if (version < 2) {
+        if (version < 3) {
           // VACUUM INTO takes a consistent SQLite backup, including live WAL.
-          if (tables.length) this.db.prepare('VACUUM INTO ?').run(`${file}.before-v2-${Date.now()}.bak`);
+          if (tables.length) this.db.prepare('VACUUM INTO ?').run(`${file}.before-v3-${Date.now()}.bak`);
           this.db.exec('BEGIN IMMEDIATE');
           try {
+            if (tables.some(row => row.name === 'records')) {
+              this.db.exec(`CREATE TABLE records_v3 (store TEXT NOT NULL CHECK(store IN (${STORES.map(name=>`'${name}'`).join(',')})), primary_key TEXT NOT NULL, chat_key TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(store,primary_key)) STRICT;
+                INSERT INTO records_v3 SELECT * FROM records; DROP TABLE records; ALTER TABLE records_v3 RENAME TO records;`);
+            }
             this.db.exec(`CREATE TABLE IF NOT EXISTS plugin_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
-              CREATE TABLE IF NOT EXISTS records (store TEXT NOT NULL CHECK(store IN ('chat_meta','recent_messages','pending_changes','full_messages','historical_changes')), primary_key TEXT NOT NULL, chat_key TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(store,primary_key)) STRICT;
+              CREATE TABLE IF NOT EXISTS records (store TEXT NOT NULL CHECK(store IN (${STORES.map(name=>`'${name}'`).join(',')})), primary_key TEXT NOT NULL, chat_key TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(store,primary_key)) STRICT;
               CREATE INDEX IF NOT EXISTS by_chat ON records(store,chat_key,primary_key);
+              CREATE INDEX IF NOT EXISTS snapshot_page ON records(store,chat_key,CAST(json_extract(primary_key,'$[1]') AS INTEGER)) WHERE store='snapshot_messages';
               CREATE TABLE IF NOT EXISTS transfer_rows (id TEXT NOT NULL, kind TEXT NOT NULL, n INTEGER NOT NULL, store TEXT NOT NULL, primary_key TEXT NOT NULL, chat_key TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(id,kind,n), UNIQUE(id,kind,store,primary_key)) STRICT;
-              PRAGMA application_id=${APP_ID}; PRAGMA user_version=2;`);
+              PRAGMA application_id=${APP_ID}; PRAGMA user_version=3;`);
             this.db.exec('COMMIT');
           } catch (error) { this.rollback(error); }
         }
-      } else if (version !== 2) throw failure('database-unavailable', '只读数据库需要先升级，未执行升级。');
+      } else if (version !== 3) throw failure('database-unavailable', '只读数据库需要先升级，未执行升级。');
       this.operations = createBackupOperations({ runTransaction: this.transaction.bind(this), requestToPromise: (value) => value });
+      this.snapshotOperations = createSnapshotOperations({ runTransaction: this.transaction.bind(this), requestToPromise: (value) => value });
       installTransfer(this);
     } catch (error) { this.db.close(); throw error; }
   }
@@ -60,7 +68,7 @@ export class SqliteRepository {
     let availableBytes = null;
     try { const space = fs.statfsSync(this.file); availableBytes = space.bavail * space.bsize; }
     catch { /* Some hosts cannot report filesystem capacity; write failures still abort. */ }
-    return { readable: true, writable: true, schema: 2, bytes, counts, transfer: 1, availableBytes };
+    return { readable: true, writable: true, schema: 3, bytes, counts, transfer: 2, snapshots: 1, availableBytes };
   }
   store(name, budget) {
     if (!STORES.includes(name)) throw failure('invalid-request', '无效记录类型。', 400);
@@ -78,24 +86,40 @@ export class SqliteRepository {
     return {
       get: (key) => read('SELECT payload FROM records WHERE store=? AND primary_key=?', [name, JSON.stringify(key)])[0],
       getAll: () => read('SELECT payload FROM records WHERE store=? ORDER BY primary_key', [name]),
+      page: ({ snapshotId, after, limit = 50 }) => {
+        const sql = snapshotId
+          ? "SELECT payload FROM records WHERE store='snapshot_messages' AND chat_key=? AND CAST(json_extract(primary_key,'$[1]') AS INTEGER)>? ORDER BY CAST(json_extract(primary_key,'$[1]') AS INTEGER) LIMIT ?"
+          : 'SELECT payload FROM records WHERE store=? AND primary_key>? ORDER BY primary_key LIMIT ?';
+        this.readStatements ??= new Map();
+        if (!this.readStatements.has(sql)) this.readStatements.set(sql,this.db.prepare(sql));
+        const rows=[]; let bytes=0;
+        const params=snapshotId?[snapshotId,after,limit]:[name,JSON.stringify(after),limit];
+        for(const row of this.readStatements.get(sql).iterate(...params)) {
+          const size=Buffer.byteLength(row.payload);if(rows.length&&bytes+size>2*1024*1024)break;
+          rows.push(decodeStorageValue(JSON.parse(row.payload)));bytes+=size;
+        }
+        return rows;
+      },
       put: (record) => {
-        if (!record || typeof record.chatKey !== 'string' || !record.chatKey || record.chatKey.length > 4096) throw failure('invalid-request', '记录缺少有效聊天身份。', 400);
-        let key = record.chatKey;
-        if (name === 'pending_changes') {
+        const storageKey=name==='snapshot_messages'?record?.snapshotId:record?.chatKey;
+        if (!record || typeof storageKey !== 'string' || !storageKey || storageKey.length > 4096) throw failure('invalid-request', '记录缺少有效聊天身份。', 400);
+        let key = storageKey;
+        if (name === 'snapshots') key=record.id;
+        else if (name === 'pending_changes') {
           if (typeof record.id !== 'string' || !record.id || !(record.messageIndex === null || (Number.isSafeInteger(record.messageIndex) && record.messageIndex >= 0))) throw failure('invalid-request', 'pending 记录无效。', 400);
           key = record.id;
         } else if (name !== 'chat_meta') {
           if (!Number.isSafeInteger(record.messageIndex) || record.messageIndex < 0) throw failure('invalid-request', '记录楼层无效。', 400);
-          key = [record.chatKey, record.messageIndex];
+          key = [storageKey, record.messageIndex];
         }
         const payload = JSON.stringify(encodeStorageValue(record));
         if (Buffer.byteLength(payload) > 8 * 1024 * 1024) throw failure('too-large', '单条备份超过 8 MiB，未写入。', 413);
-        this.db.prepare('INSERT INTO records(store,primary_key,chat_key,payload) VALUES(?,?,?,?) ON CONFLICT(store,primary_key) DO UPDATE SET chat_key=excluded.chat_key,payload=excluded.payload').run(name, JSON.stringify(key), record.chatKey, payload);
+        this.db.prepare('INSERT INTO records(store,primary_key,chat_key,payload) VALUES(?,?,?,?) ON CONFLICT(store,primary_key) DO UPDATE SET chat_key=excluded.chat_key,payload=excluded.payload').run(name, JSON.stringify(key), storageKey, payload);
         return key;
       },
       delete: (key) => this.db.prepare('DELETE FROM records WHERE store=? AND primary_key=?').run(name, JSON.stringify(key)),
       index: (indexName) => {
-        if (indexName !== 'by_chat') throw failure('invalid-request', '索引无效。', 400);
+        if (indexName !== 'by_chat' && !(name==='snapshot_messages'&&indexName==='by_snapshot')) throw failure('invalid-request', '索引无效。', 400);
         return {
           getAll: (key) => read('SELECT payload FROM records WHERE store=? AND chat_key=? ORDER BY primary_key', [name, key]),
           getAllKeys: (key) => read('SELECT primary_key FROM records WHERE store=? AND chat_key=? ORDER BY primary_key', [name, key], true),
@@ -132,7 +156,7 @@ export class SqliteRepository {
     this.cancel = cancel;
     try {
       if (operation === 'deletePendingChangesIfUnchanged') args = [args[0], { shouldDelete: () => !cancel || !Atomics.load(cancel, 0) }];
-      return await this.operations[operation](null, ...args);
+      return await (this.snapshotOperations[operation] ?? this.operations[operation])(null, ...args);
     } finally { this.cancel = null; }
   }
   close() {
