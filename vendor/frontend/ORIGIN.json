@@ -1,0 +1,16 @@
+{
+  "files": [
+    "src/storage/operations.js",
+    "src/storage/protocol.js",
+    "src/db/schema.js",
+    "src/db/identity-reconciliation.js",
+    "src/backup/cleanup.js",
+    "src/backup/frozen-resolution.js",
+    "src/backup/canonicalize.js",
+    "src/storage/health.js"
+  ],
+  "revision": "5f2200d84df355ede91ea35d484011afc796d1ef",
+  "repository": "https://github.com/Yuyayun/boxed-lllllabc",
+  "worktreeModified": false,
+  "note": "Exact source copies; maintain these transaction/protection modules together with the frontend. Preserve vendor/frontend/LICENSE."
+}

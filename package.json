@@ -1,0 +1,12 @@
+{
+  "name": "boxed-lllllabc-server",
+  "version": "1.0.0-dev.1",
+  "description": "箱装辣白菜可选的 SillyTavern SQLite 服务器插件",
+  "type": "module",
+  "main": "index.mjs",
+  "engines": { "node": ">=22.14.0" },
+  "scripts": { "test": "node --test tests/*.test.js" },
+  "repository": { "type": "git", "url": "https://github.com/Yuyayun/boxed-lllllabc-server.git" },
+  "license": "SEE LICENSE IN LICENSE",
+  "private": true
+}
