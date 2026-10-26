@@ -2,7 +2,7 @@
 
 箱装辣白菜的**可选** SillyTavern 服务器插件，与 [前端扩展](https://github.com/Yuyayun/boxed-lllllabc) 分仓库、独立安装和更新。只装前端即可使用 IndexedDB；安装本插件不会切换存储方式或迁移任何前端数据。
 
-当前版本 `1.0.0-dev.3`，存储协议 `3`，SQLite schema `3`。P4 已提供聊天快照模型，支持创建、管理和原生保存核对；完整发布验收尚未结束。只在独立测试环境验收此开发版本。
+当前版本 `1.0.0-dev.4`，存储协议 `4`，SQLite schema `3`。P5 已提供普通备份批量清理，P4 聊天快照继续保留；完整发布验收尚未结束。只在独立测试环境验收此开发版本。
 
 ## 运行条件
 
@@ -36,7 +36,7 @@ boxedLllllabc:
 
 - 同源路由 `/api/plugins/boxed-lllllabc/status`、`/operation` 和 `/transfer`，只接受已定义的备份操作。写请求必须有酒馆原生 CSRF 头；不接受任意 SQL、文件路径或客户端 `isSingleUser` 声明。
 - `GET /status` 返回协议、可写状态、记录统计和 SQLite 自身文件/WAL/SHM 占用，不使用浏览器配额充当服务器空间。
-- `POST /operation` 请求 `{ protocol: 3, operation, args }`。`args` 使用前后端共用的无损标记编码；返回 `{ok, protocol, value}`，失败则为非 2xx `{ok:false, protocol, code, reason}`。前端客户端位于前端仓库 `src/storage/sqlite-client.js`。
+- `POST /operation` 请求 `{ protocol: 4, operation, args }`。`args` 使用前后端共用的无损标记编码；返回 `{ok, protocol, value}`，失败则为非 2xx `{ok:false, protocol, code, reason}`。前端客户端位于前端仓库 `src/storage/sqlite-client.js`。
 - 仅开放业务操作，不提供直接删除 pending 的接口。清理指纹、冻结/待确认保护和身份迁移使用与 IndexedDB 相同的事务规则。
 - Date、undefined、null、多 swipe、嵌套字段等无损保存。循环引用或不支持的值明确失败，禁止 JSON 静默丢字段。
 - SQLite 在**同进程工作线程**中运行，不另启 Node 服务；串行执行、有界队列 32、忙等待 1 秒、WAL、FULL 同步、每操作事务。请求中断的取消标记在提交前检查；pending 还会复核原记录内容。
@@ -61,9 +61,15 @@ boxedLllllabc:
 
 快照恢复由前端走酒馆原生聊天保存路径，本插件只负责箱装数据存储。只有实际保存内容核对一致才确认成功；失败时保留带元数据保存证明的保护记录与源快照，不靠界面变化认定保存完成。schema 0/1/2 升级到 3 前生成一致备份，未知/未来版本不会被覆盖。安装本插件仍不自动切换或迁移。
 
+## 普通备份批量清理（P5）
+
+协议 4 新增受限的 `deleteBackupBatch({plan,confirmed:true})`。只针对活动端普通备份，在同一事务中重读整个选定范围、复核预览指纹和保护状态，再复用单聊天清理规则删除并修正元数据。pending 与冻结/等待确认的完整备份始终跳过，快照与其正文不在此事务的操作范围内。过期计划返回 `stale-cleanup-plan`，中途异常整批回滚；不支持任意表、SQL、路径或关闭保护规则的参数。
+
+四种范围由前端生成预览，协议限制、单用户、CSRF、同源和持久切换锁同样适用。清理不更改前端活动端、备份设置或原生聊天文件，也不等同于清空非活动端。仍受普通读取和请求限额约束，超限明确失败；不分页截断后删除。网络结果未确认时先核对实际数据，不能自动重试旧计划。安装插件仍不自动切换或迁移。
+
 ## 切换与中断恢复
 
-前端设置中通过「切换存储方式」明确确认覆盖目标端。`POST /transfer` 仅接受 `{protocol:3, action, args}`；action 限定为 status/source/prepare/append/page/seal/check/commit/rollback/finish。两端均保留持久任务锁；目标原数据在最终激活前保留事务回滚副本。普通读写在任务锁释放前拒绝执行，不自动回退到 IndexedDB。
+前端设置中通过「切换存储方式」明确确认覆盖目标端。`POST /transfer` 仅接受 `{protocol:4, action, args}`；action 限定为 status/source/prepare/append/page/seal/check/commit/rollback/finish。两端均保留持久任务锁；目标原数据在最终激活前保留事务回滚副本。普通读写在任务锁释放前拒绝执行，不自动回退到 IndexedDB。
 
 活动端和恢复日志由当前浏览器独立控制库保存，服务端保留提交回执。重启后，尚未持久激活的操作回滚原目标；已激活的操作完成收尾。后端失联时保留锁和日志，在恢复连接后重试。不要手动删除锁、暂存表或浏览器控制库来跳过恢复。成功后来源原副本继续保留，不同步、不双写。任务使用临时空间；配额、磁盘或读回校验失败会拒绝切换。
 

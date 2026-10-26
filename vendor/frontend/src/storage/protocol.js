@@ -1,10 +1,11 @@
-export const STORAGE_PROTOCOL = 3;
+export const STORAGE_PROTOCOL = 4;
 export const STORAGE_OPERATIONS = Object.freeze([
   "getChatMeta", "putChatMeta", "updateChatMetaSummary", "getRecentMessages",
   "replaceRecentSnapshot", "getFullMessages", "putFullMessages", "replaceFullSnapshot",
   "getHistoricalChanges", "putHistoricalChanges", "getPendingChanges", "putPendingChanges",
   "replacePendingChanges", "deletePendingChangesIfUnchanged", "getBackupCatalogData",
   "reconcileChatIdentity", "migrateRenamedChatIdentity", "deleteBackupTypeForChat", "resolveFrozenFullBackup",
+  "deleteBackupBatch",
   "beginSnapshot", "appendSnapshotMessages", "publishSnapshot", "getSnapshotHeader", "getSnapshotMessages", "listSnapshots", "renameSnapshot", "deleteSnapshot",
 ]);
 

@@ -1,5 +1,7 @@
 import { INDEXES, STORES } from "../db/schema.js";
 import { buildCleanupMetaPatch, fingerprintBackupRecords } from "../backup/cleanup.js";
+import { buildBackupCatalog } from "../backup/catalog.js";
+import { validateBatchCleanupPlan } from "../backup/batch-cleanup.js";
 import {
   buildResolvedFullBackupMeta,
   FROZEN_FULL_BACKUP_ACTIONS,
@@ -14,7 +16,7 @@ import { filterValidStoreRecords, inspectBackupCatalogData } from "../storage/he
 
 
 // Shared transaction rules; adapters supply the transaction and request drivers.
-export function createBackupOperations({ runTransaction, requestToPromise }) {
+export function createBackupOperations({ runTransaction, requestToPromise, storageMode = "indexeddb" }) {
   async function replaceRecentSnapshot(db, { meta, messages }) {
     return runTransaction(db, [STORES.chatMeta, STORES.recentMessages], "readwrite", async (stores) => {
       const chatMetaStore = stores.get(STORES.chatMeta);
@@ -136,16 +138,18 @@ export function createBackupOperations({ runTransaction, requestToPromise }) {
       STORES.fullMessages,
       STORES.historicalChanges,
     ];
-    return runTransaction(db, storeNames, "readonly", async (stores) => {
-      const [chatMeta, recentMessages, pendingChanges, fullMessages, historicalChanges] = await Promise.all([
-        requestToPromise(stores.get(STORES.chatMeta).getAll()),
-        requestToPromise(stores.get(STORES.recentMessages).getAll()),
-        requestToPromise(stores.get(STORES.pendingChanges).getAll()),
-        requestToPromise(stores.get(STORES.fullMessages).getAll()),
-        requestToPromise(stores.get(STORES.historicalChanges).getAll()),
-      ]);
-      return inspectBackupCatalogData({ chatMeta, recentMessages, pendingChanges, fullMessages, historicalChanges });
-    });
+    return runTransaction(db, storeNames, "readonly", readCatalogStores);
+  }
+
+  async function readCatalogStores(stores) {
+    const [chatMeta, recentMessages, pendingChanges, fullMessages, historicalChanges] = await Promise.all([
+      requestToPromise(stores.get(STORES.chatMeta).getAll()),
+      requestToPromise(stores.get(STORES.recentMessages).getAll()),
+      requestToPromise(stores.get(STORES.pendingChanges).getAll()),
+      requestToPromise(stores.get(STORES.fullMessages).getAll()),
+      requestToPromise(stores.get(STORES.historicalChanges).getAll()),
+    ]);
+    return inspectBackupCatalogData({ chatMeta, recentMessages, pendingChanges, fullMessages, historicalChanges });
   }
 
   async function reconcileChatIdentity(db, identity) {
@@ -344,34 +348,57 @@ export function createBackupOperations({ runTransaction, requestToPromise }) {
     }
 
     return runTransaction(db, [STORES.chatMeta, config.store], "readwrite", async (stores) => {
-      const recordStore = stores.get(config.store);
-      const index = recordStore.index(config.index);
-      const records = await requestToPromise(index.getAll(chatKey));
-      if (fingerprintBackupRecords(records) !== expectedFingerprint) {
-        throw new Error("这类备份在预览后发生了变化，请重新预览再清理。");
-      }
+      return deleteBackupTypeInStores(stores, { chatKey, type, expectedFingerprint });
+    });
+  }
 
-      const metaStore = stores.get(STORES.chatMeta);
-      const meta = await requestToPromise(metaStore.get(chatKey));
-      if (type === "full" && ["frozen", "awaiting-confirmation"].includes(meta?.fullBackupState)) {
-        throw new Error(meta.fullBackupState === "frozen"
-          ? "完整聊天备份已进入冻结保护状态，不能清理。"
-          : "完整聊天备份正在等待后端确认，不能清理。");
-      }
+  async function deleteBackupTypeInStores(stores, { chatKey, type, expectedFingerprint }) {
+    const config = cleanupStoreConfig(type);
+    if (!config) throw new Error("无法识别要清理的聊天或备份类型。");
+    const recordStore = stores.get(config.store);
+    const index = recordStore.index(config.index);
+    const records = await requestToPromise(index.getAll(chatKey));
+    if (fingerprintBackupRecords(records) !== expectedFingerprint) {
+      throw new Error("这类备份在预览后发生了变化，请重新预览再清理。");
+    }
 
-      const keys = await requestToPromise(index.getAllKeys(chatKey));
-      for (const key of keys) {
-        await requestToPromise(recordStore.delete(key));
-      }
+    const metaStore = stores.get(STORES.chatMeta);
+    const meta = await requestToPromise(metaStore.get(chatKey));
+    if (type === "full" && ["frozen", "awaiting-confirmation"].includes(meta?.fullBackupState)) {
+      throw new Error(meta.fullBackupState === "frozen"
+        ? "完整聊天备份已进入冻结保护状态，不能清理。"
+        : "完整聊天备份正在等待后端确认，不能清理。");
+    }
 
-      if (meta) {
-        await requestToPromise(metaStore.put({
-          ...meta,
-          ...buildCleanupMetaPatch(type),
-          chatKey,
-        }));
+    const keys = await requestToPromise(index.getAllKeys(chatKey));
+    for (const key of keys) {
+      await requestToPromise(recordStore.delete(key));
+    }
+
+    if (meta) {
+      await requestToPromise(metaStore.put({
+        ...meta,
+        ...buildCleanupMetaPatch(type),
+        chatKey,
+      }));
+    }
+    return { deletedCount: keys.length, type, chatKey };
+  }
+
+  async function deleteBackupBatch(db, { plan, confirmed = false } = {}) {
+    if (confirmed !== true) throw new Error("批量清理必须先预览并明确确认。");
+    const storeNames = [STORES.chatMeta, STORES.recentMessages, STORES.fullMessages, STORES.historicalChanges, STORES.pendingChanges];
+    return runTransaction(db, storeNames, "readwrite", async stores => {
+      const catalog = buildBackupCatalog(await readCatalogStores(stores));
+      const fresh = validateBatchCleanupPlan({ plan, catalog, mode: storageMode });
+      const items = [];
+      for (const action of fresh.actions) {
+        const result = await deleteBackupTypeInStores(stores, action);
+        items.push({ chatKey: action.chatKey, chatName: action.chatName, type: action.type, typeLabel: action.typeLabel, status: "deleted", count: result.deletedCount });
       }
-      return { deletedCount: keys.length, type, chatKey };
+      const skipped = fresh.skipped.map(item => ({ chatKey: item.chatKey, chatName: item.chatName, type: item.type, typeLabel: item.typeLabel, status: "skipped", count: item.count, reason: item.blockedReason }));
+      return { ok: true, committed: true, succeeded: items.length, skipped: skipped.length, failed: 0,
+        deletedRecords: items.reduce((sum, item) => sum + item.count, 0), items: [...items, ...skipped] };
     });
   }
 
@@ -615,6 +642,7 @@ export function createBackupOperations({ runTransaction, requestToPromise }) {
     reconcileChatIdentity,
     migrateRenamedChatIdentity,
     deleteBackupTypeForChat,
+    deleteBackupBatch,
     resolveFrozenFullBackup,
     putPendingChanges,
     replacePendingChanges,

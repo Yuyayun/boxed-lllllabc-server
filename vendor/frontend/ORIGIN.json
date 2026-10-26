@@ -1,8 +1,8 @@
 {
-  "revision": "2dadcc9006a406d81e58e9e6d4d94a17dcae00c7",
+  "revision": "d71a2f868dc8a470af012fd62aaf83e59d9d69f7",
+  "note": "Exact source copies; maintain these transaction/protection modules together with the frontend. Preserve vendor/frontend/LICENSE.",
   "repository": "https://github.com/Yuyayun/boxed-lllllabc",
   "worktreeModified": false,
-  "note": "Exact source copies; maintain these transaction/protection modules together with the frontend. Preserve vendor/frontend/LICENSE.",
   "files": [
     "src/storage/operations.js",
     "src/storage/snapshot-operations.js",
@@ -14,6 +14,8 @@
     "src/db/schema.js",
     "src/db/identity-reconciliation.js",
     "src/backup/cleanup.js",
+    "src/backup/catalog.js",
+    "src/backup/batch-cleanup.js",
     "src/backup/frozen-resolution.js",
     "src/backup/canonicalize.js",
     "src/storage/health.js"

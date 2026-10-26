@@ -44,7 +44,7 @@ export class SqliteRepository {
           } catch (error) { this.rollback(error); }
         }
       } else if (version !== 3) throw failure('database-unavailable', '只读数据库需要先升级，未执行升级。');
-      this.operations = createBackupOperations({ runTransaction: this.transaction.bind(this), requestToPromise: (value) => value });
+      this.operations = createBackupOperations({ runTransaction: this.transaction.bind(this), requestToPromise: (value) => value, storageMode: 'sqlite' });
       this.snapshotOperations = createSnapshotOperations({ runTransaction: this.transaction.bind(this), requestToPromise: (value) => value });
       installTransfer(this);
     } catch (error) { this.db.close(); throw error; }

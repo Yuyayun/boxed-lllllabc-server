@@ -33,7 +33,7 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
     }
   };
   router.get('/status', route(async (request, owner, signal) => ({
-    pluginVersion: '1.0.0-dev.3', state: 'connected',
+    pluginVersion: '1.0.0-dev.4', state: 'connected',
     database: await getWorker().call('_status', [], owner, { signal, authorize: () => authorize(host, request) }),
   })));
   router.post('/operation', route(async (request, owner, signal) => {

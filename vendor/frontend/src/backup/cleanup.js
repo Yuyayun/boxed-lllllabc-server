@@ -27,7 +27,7 @@ export function createBackupCleanupPlan({ chat, type } = {}) {
     expectedFingerprint: String(summary.fingerprint || fingerprintBackupRecords([])),
     blockedReason,
     canConfirm: !blockedReason,
-    notice: "只删除扩展保存在当前浏览器中的这一类备份，不会删除或修改 SillyTavern 聊天文件，也不会更改备份开关。",
+    notice: "只删除扩展保存在当前活动存储中的这一类备份，不会删除或修改 SillyTavern 聊天文件，也不会更改备份开关。",
   };
 }
 
