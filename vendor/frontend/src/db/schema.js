@@ -1,5 +1,7 @@
 export const DB_NAME = "boxed-lllllabc";
-export const DB_VERSION = 5;
+export const DB_VERSION = 6;
+
+export const TRANSFER_STORES = Object.freeze({ meta: "__boxed_transfer_meta", rows: "__boxed_transfer_rows" });
 
 export const STORES = {
   chatMeta: "chat_meta",

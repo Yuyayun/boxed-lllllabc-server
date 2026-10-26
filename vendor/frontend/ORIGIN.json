@@ -1,7 +1,10 @@
 {
+  "repository": "https://github.com/Yuyayun/boxed-lllllabc",
+  "revision": "74078167ccff34c5a30b0cf54af5db012c50c2e2",
   "files": [
     "src/storage/operations.js",
     "src/storage/protocol.js",
+    "src/storage/transfer-format.js",
     "src/db/schema.js",
     "src/db/identity-reconciliation.js",
     "src/backup/cleanup.js",
@@ -9,8 +12,6 @@
     "src/backup/canonicalize.js",
     "src/storage/health.js"
   ],
-  "revision": "5f2200d84df355ede91ea35d484011afc796d1ef",
-  "repository": "https://github.com/Yuyayun/boxed-lllllabc",
-  "worktreeModified": false,
-  "note": "Exact source copies; maintain these transaction/protection modules together with the frontend. Preserve vendor/frontend/LICENSE."
+  "note": "Exact source copies; maintain these transaction/protection modules together with the frontend. Preserve vendor/frontend/LICENSE.",
+  "worktreeModified": false
 }

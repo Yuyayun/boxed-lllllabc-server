@@ -15,7 +15,11 @@ parentPort.on('message', (job) => {
       if (job.operation === '_close') { repository.close(); value = true; }
       else {
         repository.owner(job.owner);
-        value = job.operation === '_status' ? repository.status() : await repository.execute(job.operation, job.args, cancel);
+        if (job.operation === '_transfer') {
+          repository.cancel = cancel;
+          try { value = await repository.transfer(...job.args); }
+          finally { repository.cancel = null; }
+        } else value = job.operation === '_status' ? repository.status() : await repository.execute(job.operation, job.args, cancel);
       }
       parentPort.postMessage({ id: job.id, value });
     } catch (error) {

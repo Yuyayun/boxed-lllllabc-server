@@ -1,4 +1,4 @@
-export const STORAGE_PROTOCOL = 1;
+export const STORAGE_PROTOCOL = 2;
 export const STORAGE_OPERATIONS = Object.freeze([
   "getChatMeta", "putChatMeta", "updateChatMetaSummary", "getRecentMessages",
   "replaceRecentSnapshot", "getFullMessages", "putFullMessages", "replaceFullSnapshot",

@@ -2,6 +2,7 @@ import { authorize, databasePath } from './host.js';
 import { SqliteWorker } from './worker-client.js';
 import { failure, safeError } from './errors.js';
 import { STORAGE_PROTOCOL, STORAGE_OPERATIONS, encodeStorageValue, decodeStorageValue } from '../vendor/frontend/src/storage/protocol.js';
+import { TRANSFER_ACTIONS } from './transfer.js';
 
 export function installRoutes(router, { host, hostError, createWorker = (file) => new SqliteWorker(file) }) {
   let worker;
@@ -32,7 +33,7 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
     }
   };
   router.get('/status', route(async (request, owner, signal) => ({
-    pluginVersion: '1.0.0-dev.1', state: 'connected',
+    pluginVersion: '1.0.0-dev.2', state: 'connected',
     database: await getWorker().call('_status', [], owner, { signal, authorize: () => authorize(host, request) }),
   })));
   router.post('/operation', route(async (request, owner, signal) => {
@@ -48,6 +49,17 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
     const value = encodeStorageValue(result);
     if (Buffer.byteLength(JSON.stringify(value)) > 32 * 1024 * 1024) throw failure('too-large', '响应超过读取上限，请分批操作。', 413);
     return { value };
+  }));
+  router.post('/transfer', route(async (request, owner, signal) => {
+    const body = request.body;
+    if (body?.protocol !== STORAGE_PROTOCOL) throw failure('protocol-incompatible', '切换协议不兼容，请升级对应插件。', 409);
+    if (Object.keys(body).some((key) => !['protocol','action','args'].includes(key)) || !TRANSFER_ACTIONS.includes(body.action)) throw failure('invalid-request', '切换请求无效，不接受路径或 SQL。', 400);
+    if (Buffer.byteLength(JSON.stringify(body)) > 16 * 1024 * 1024) throw failure('too-large', '切换批次超过 16 MiB。', 413);
+    let args;
+    try { args = decodeStorageValue(body.args); } catch { throw failure('invalid-request', '切换数据无法无损解码。', 400); }
+    if (!args || Array.isArray(args) || typeof args !== 'object' || Object.keys(args).some((key) => !['id','after','rows','manifest'].includes(key))) throw failure('invalid-request', '切换参数无效。', 400);
+    const result = await getWorker().call('_transfer', [body.action,args], owner, { signal, authorize: () => authorize(host,request) });
+    return { value: encodeStorageValue(result) };
   }));
   return { close: async () => { if (worker) await worker.close(); } };
 }
