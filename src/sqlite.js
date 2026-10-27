@@ -44,7 +44,9 @@ export class SqliteRepository {
           } catch (error) { this.rollback(error); }
         }
       } else if (version !== 3) throw failure('database-unavailable', '只读数据库需要先升级，未执行升级。');
-      this.operations = createBackupOperations({ runTransaction: this.transaction.bind(this), requestToPromise: (value) => value, storageMode: 'sqlite' });
+      this.operations = createBackupOperations({ runTransaction: this.transaction.bind(this), requestToPromise: (value) => value, storageMode: 'sqlite', catalogDriver: {
+        keys: store => store.chatKeys(), count: store => store.count(), check: () => this.checkCancelled(),
+      } });
       this.snapshotOperations = createSnapshotOperations({ runTransaction: this.transaction.bind(this), requestToPromise: (value) => value });
       installTransfer(this);
     } catch (error) { this.db.close(); throw error; }
@@ -73,17 +75,27 @@ export class SqliteRepository {
   store(name, budget) {
     if (!STORES.includes(name)) throw failure('invalid-request', '无效记录类型。', 400);
     const read = (sql, params = [], keys = false) => {
+      const activeBudget=this.bulkCatalog ? {rows:0,bytes:0} : budget;
       const result = [];
       this.readStatements ??= new Map();
       if (!this.readStatements.has(sql)) this.readStatements.set(sql, this.db.prepare(sql));
       for (const row of this.readStatements.get(sql).iterate(...params)) {
-        budget.bytes += Buffer.byteLength(keys ? row.primary_key : row.payload);
-        if (++budget.rows > MAX_ROWS || budget.bytes > MAX_BYTES) throw failure('too-large', '本次读取超过限额，请分批操作。', 413);
+        activeBudget.bytes += Buffer.byteLength(keys ? row.primary_key : row.payload);
+        if (++activeBudget.rows > MAX_ROWS || activeBudget.bytes > (this.bulkCatalog?128*1024*1024:MAX_BYTES)) throw failure('too-large', '本次读取超过限额，请分批操作。', 413);
         result.push(keys ? JSON.parse(row.primary_key) : decodeStorageValue(JSON.parse(row.payload)));
       }
       return result;
     };
     return {
+      count: () => this.db.prepare('SELECT count(*) AS n FROM records WHERE store=?').get(name).n,
+      chatKeys: () => {
+        const keys=[];
+        for(const row of this.db.prepare('SELECT DISTINCT chat_key FROM records WHERE store=? ORDER BY chat_key').iterate(name)) {
+          if(keys.length>=MAX_ROWS)throw failure('too-large','目录聊天数超过读取限额，未执行清理。',413);
+          keys.push(row.chat_key);
+        }
+        return keys;
+      },
       get: (key) => read('SELECT payload FROM records WHERE store=? AND primary_key=?', [name, JSON.stringify(key)])[0],
       getAll: () => read('SELECT payload FROM records WHERE store=? ORDER BY primary_key', [name]),
       page: ({ snapshotId, after, limit = 50 }) => {
@@ -154,10 +166,11 @@ export class SqliteRepository {
   async execute(operation, args, cancel) {
     if (!STORAGE_OPERATIONS.includes(operation) || !Array.isArray(args)) throw failure('invalid-request', '不支持的箱装操作。', 400);
     this.cancel = cancel;
+    this.bulkCatalog = ['getBackupCatalog','deleteBackupBatch'].includes(operation);
     try {
       if (operation === 'deletePendingChangesIfUnchanged') args = [args[0], { shouldDelete: () => !cancel || !Atomics.load(cancel, 0) }];
       return await (this.snapshotOperations[operation] ?? this.operations[operation])(null, ...args);
-    } finally { this.cancel = null; }
+    } finally { this.cancel = null; this.bulkCatalog = false; }
   }
   close() {
     if (!this.closed) { this.db.close(); this.closed = true; }

@@ -59,3 +59,11 @@ test('SQLite 全局读取超过现有限额明确拒绝批量清理，不截断�
   repo.db.exec('COMMIT');const before=repo.db.prepare('SELECT count(*) AS n FROM records').get().n;
   await assert.rejects(session.deleteBackupBatch({plan,confirmed:true}),{code:'too-large'});assert.equal(repo.db.prepare('SELECT count(*) AS n FROM records').get().n,before);
 });
+test('摘要目录跨越原32MiB总读取上限，保持原计划指纹且可原子清理',async t=>{
+ const {session}=fixture(t),data=batchData();
+ for(const rows of [data.recentMessages,data.fullMessages,data.historicalChanges,data.pendingChanges])for(const row of rows)row.raw={mes:'x'.repeat(2400000),swipes:['甲','乙'],swipe_id:1};
+ await seedBatchData(session,data);await assert.rejects(session.getBackupCatalogData(),{code:'too-large'});
+ const catalog=await session.getBackupCatalog();assert.equal(catalog.chatCount,3);assert.equal(catalog.recordCount,15);
+ const expected=buildBackupCatalog(data);assert.equal(catalog.chats.find(c=>c.chatKey===data.chatMeta[0].chatKey).recent.fingerprint,expected.chats.find(c=>c.chatKey===data.chatMeta[0].chatKey).recent.fingerprint);
+ const plan=createBatchCleanupPlan({catalog,selection:{range:'all'},mode:'sqlite'});const result=await session.deleteBackupBatch({plan,confirmed:true});assert.equal(result.deletedRecords,10);assert.equal((await session.getBackupCatalog()).recordCount,5);
+});

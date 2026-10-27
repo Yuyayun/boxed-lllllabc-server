@@ -38,6 +38,12 @@ export function buildBackupCatalog({
     .map(finishEntry)
     .filter((entry) => entry.recordCount > 0)
     .sort(compareEntries);
+  return summarizeBackupCatalog(chats, safeArray(healthIssues)
+    .reduce((sum, issue) => sum + Math.max(0, Number(issue?.invalidCount) || 0), 0));
+}
+
+export function summarizeBackupCatalog(entries, invalidRecordCount = 0) {
+  const chats = [...entries].sort(compareEntries);
   return {
     chats,
     groups: groupCatalogChats(chats),
@@ -46,8 +52,7 @@ export function buildBackupCatalog({
     storageBytes: chats.reduce((sum, entry) => sum + entry.storageBytes, 0),
     pendingChatCount: chats.filter((entry) => entry.pending.count > 0).length,
     frozenChatCount: chats.filter((entry) => entry.isFrozen).length,
-    invalidRecordCount: safeArray(healthIssues)
-      .reduce((sum, issue) => sum + Math.max(0, Number(issue?.invalidCount) || 0), 0),
+    invalidRecordCount,
   };
 }
 

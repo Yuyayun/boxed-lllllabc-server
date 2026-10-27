@@ -1,10 +1,10 @@
 {
-  "revision": "d71a2f868dc8a470af012fd62aaf83e59d9d69f7",
-  "note": "Exact source copies; maintain these transaction/protection modules together with the frontend. Preserve vendor/frontend/LICENSE.",
   "repository": "https://github.com/Yuyayun/boxed-lllllabc",
-  "worktreeModified": false,
+  "revision": "742a9adb3209aa2648bc7691bdeaeebdfafa3717",
+  "note": "Exact source copies; maintain these transaction/protection modules together with the frontend. Preserve vendor/frontend/LICENSE.",
   "files": [
     "src/storage/operations.js",
+    "src/storage/catalog-reader.js",
     "src/storage/snapshot-operations.js",
     "src/storage/value-digest.js",
     "src/snapshots/model.js",
@@ -19,5 +19,6 @@
     "src/backup/frozen-resolution.js",
     "src/backup/canonicalize.js",
     "src/storage/health.js"
-  ]
+  ],
+  "worktreeModified": false
 }

@@ -2,12 +2,12 @@
 
 箱装辣白菜的**可选** SillyTavern 服务器插件，与 [前端扩展](https://github.com/Yuyayun/boxed-lllllabc) 分仓库、独立安装和更新。只装前端即可使用 IndexedDB；安装本插件不会切换存储方式或迁移任何前端数据。
 
-当前版本 `1.0.0-dev.4`，存储协议 `4`，SQLite schema `3`。P5 已提供普通备份批量清理，P4 聊天快照继续保留；完整发布验收尚未结束。只在独立测试环境验收此开发版本。
+当前版本 `1.0.0-dev.5`，存储协议 `5`，SQLite schema `3`。P7 已完成指定大目录样本和两个酒馆版本的软件回归，P4/P5 的快照与批量清理继续保留；真实手机等发布验收尚未结束。只在独立测试环境验收此开发版本。
 
 ## 运行条件
 
 - Node.js **22.14.0 或以上**，需要内置 `node:sqlite`。本机已验证 Node 22.14.0 和 24.15.0。Node 22 的 SQLite 模块仍有实验性提示，未来 Node/SQLite 升级需重新验证。
-- 已实测 SillyTavern **1.15.0** 的 `init(router)`/`info`/`exit`、服务端用户 API、会话及 CSRF 路由。其他版本暂未验证；身份接口不可靠时拒绝 SQLite，不猜测权限。
+- 已实测 SillyTavern **1.15.0 和 1.19.0** 的 `init(router)`/`info`/`exit`、服务端用户 API、会话及 CSRF 路由。其他版本暂未验证；身份接口不可靠时拒绝 SQLite，不猜测权限。
 - 仅支持关闭账户系统的 Default-user，或**唯一启用账户且登录会话与它一致**。多于一个启用账户时拒绝 SQLite 读写。它不是多用户数据库，不提供跨设备同步。
 - 使用酒馆的登录态和 CSRF。关闭酒馆 CSRF 保护会使本插件拒绝操作。
 
@@ -36,7 +36,7 @@ boxedLllllabc:
 
 - 同源路由 `/api/plugins/boxed-lllllabc/status`、`/operation` 和 `/transfer`，只接受已定义的备份操作。写请求必须有酒馆原生 CSRF 头；不接受任意 SQL、文件路径或客户端 `isSingleUser` 声明。
 - `GET /status` 返回协议、可写状态、记录统计和 SQLite 自身文件/WAL/SHM 占用，不使用浏览器配额充当服务器空间。
-- `POST /operation` 请求 `{ protocol: 4, operation, args }`。`args` 使用前后端共用的无损标记编码；返回 `{ok, protocol, value}`，失败则为非 2xx `{ok:false, protocol, code, reason}`。前端客户端位于前端仓库 `src/storage/sqlite-client.js`。
+- `POST /operation` 请求 `{ protocol: 5, operation, args }`。`args` 使用前后端共用的无损标记编码；返回 `{ok, protocol, value}`，失败则为非 2xx `{ok:false, protocol, code, reason}`。前端客户端位于前端仓库 `src/storage/sqlite-client.js`。
 - 仅开放业务操作，不提供直接删除 pending 的接口。清理指纹、冻结/待确认保护和身份迁移使用与 IndexedDB 相同的事务规则。
 - Date、undefined、null、多 swipe、嵌套字段等无损保存。循环引用或不支持的值明确失败，禁止 JSON 静默丢字段。
 - SQLite 在**同进程工作线程**中运行，不另启 Node 服务；串行执行、有界队列 32、忙等待 1 秒、WAL、FULL 同步、每操作事务。请求中断的取消标记在提交前检查；pending 还会复核原记录内容。
@@ -61,6 +61,14 @@ boxedLllllabc:
 
 快照恢复由前端走酒馆原生聊天保存路径，本插件只负责箱装数据存储。只有实际保存内容核对一致才确认成功；失败时保留带元数据保存证明的保护记录与源快照，不靠界面变化认定保存完成。schema 0/1/2 升级到 3 前生成一致备份，未知/未来版本不会被覆盖。安装本插件仍不自动切换或迁移。
 
+## 大目录摘要（P7）
+
+协议 5 新增 `getBackupCatalog`。在同一数据库事务内逐聊天读取五类普通记录，复用前端目录/指纹/保护规则，只返回紧凑摘要，不把全部消息正文发送到浏览器。批量清理在同一删除事务中使用此摘要验证，不新增宽松删除规则。无效或缺失索引的记录会计入异常并阻止清理。
+
+原普通整包接口仍保持每次 25,000 条/32MiB 限额；摘要及批量事务每次按聊天/类型读取，最多 25,000 条/128MiB。超限不截断，写入中途异常仍整批回滚。工作线程超时/队列、原生 CSRF、同源、单账户验证和持久切换锁继续适用。数据库 schema 3 不变。
+
+前后端要同时兼容协议 5。前端始终可独立使用 IndexedDB；SQLite 断线或不兼容不自动回退。当前开发版本不代表全部平台和规模已完成发行验收。
+
 ## 普通备份批量清理（P5）
 
 协议 4 新增受限的 `deleteBackupBatch({plan,confirmed:true})`。只针对活动端普通备份，在同一事务中重读整个选定范围、复核预览指纹和保护状态，再复用单聊天清理规则删除并修正元数据。pending 与冻结/等待确认的完整备份始终跳过，快照与其正文不在此事务的操作范围内。过期计划返回 `stale-cleanup-plan`，中途异常整批回滚；不支持任意表、SQL、路径或关闭保护规则的参数。
@@ -69,7 +77,7 @@ boxedLllllabc:
 
 ## 切换与中断恢复
 
-前端设置中通过「切换存储方式」明确确认覆盖目标端。`POST /transfer` 仅接受 `{protocol:4, action, args}`；action 限定为 status/source/prepare/append/page/seal/check/commit/rollback/finish。两端均保留持久任务锁；目标原数据在最终激活前保留事务回滚副本。普通读写在任务锁释放前拒绝执行，不自动回退到 IndexedDB。
+前端设置中通过「切换存储方式」明确确认覆盖目标端。`POST /transfer` 仅接受 `{protocol:5, action, args}`；action 限定为 status/source/prepare/append/page/seal/check/commit/rollback/finish。两端均保留持久任务锁；目标原数据在最终激活前保留事务回滚副本。普通读写在任务锁释放前拒绝执行，不自动回退到 IndexedDB。
 
 活动端和恢复日志由当前浏览器独立控制库保存，服务端保留提交回执。重启后，尚未持久激活的操作回滚原目标；已激活的操作完成收尾。后端失联时保留锁和日志，在恢复连接后重试。不要手动删除锁、暂存表或浏览器控制库来跳过恢复。成功后来源原副本继续保留，不同步、不双写。任务使用临时空间；配额、磁盘或读回校验失败会拒绝切换。
 

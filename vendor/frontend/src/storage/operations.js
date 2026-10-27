@@ -2,6 +2,7 @@ import { INDEXES, STORES } from "../db/schema.js";
 import { buildCleanupMetaPatch, fingerprintBackupRecords } from "../backup/cleanup.js";
 import { buildBackupCatalog } from "../backup/catalog.js";
 import { validateBatchCleanupPlan } from "../backup/batch-cleanup.js";
+import { readCatalogByChat, CATALOG_STORES } from "./catalog-reader.js";
 import {
   buildResolvedFullBackupMeta,
   FROZEN_FULL_BACKUP_ACTIONS,
@@ -16,7 +17,7 @@ import { filterValidStoreRecords, inspectBackupCatalogData } from "../storage/he
 
 
 // Shared transaction rules; adapters supply the transaction and request drivers.
-export function createBackupOperations({ runTransaction, requestToPromise, storageMode = "indexeddb" }) {
+export function createBackupOperations({ runTransaction, requestToPromise, storageMode = "indexeddb", catalogDriver }) {
   async function replaceRecentSnapshot(db, { meta, messages }) {
     return runTransaction(db, [STORES.chatMeta, STORES.recentMessages], "readwrite", async (stores) => {
       const chatMetaStore = stores.get(STORES.chatMeta);
@@ -150,6 +151,12 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
       requestToPromise(stores.get(STORES.historicalChanges).getAll()),
     ]);
     return inspectBackupCatalogData({ chatMeta, recentMessages, pendingChanges, fullMessages, historicalChanges });
+  }
+
+  const catalogInTransaction = stores => catalogDriver ? readCatalogByChat(stores, catalogDriver, requestToPromise)
+    : readCatalogStores(stores).then(buildBackupCatalog);
+  async function getBackupCatalog(db) {
+    return runTransaction(db, CATALOG_STORES, "readonly", catalogInTransaction);
   }
 
   async function reconcileChatIdentity(db, identity) {
@@ -389,7 +396,7 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
     if (confirmed !== true) throw new Error("批量清理必须先预览并明确确认。");
     const storeNames = [STORES.chatMeta, STORES.recentMessages, STORES.fullMessages, STORES.historicalChanges, STORES.pendingChanges];
     return runTransaction(db, storeNames, "readwrite", async stores => {
-      const catalog = buildBackupCatalog(await readCatalogStores(stores));
+      const catalog = await catalogInTransaction(stores);
       const fresh = validateBatchCleanupPlan({ plan, catalog, mode: storageMode });
       const items = [];
       for (const action of fresh.actions) {
@@ -639,6 +646,7 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
     replaceFullSnapshot,
     getChatMeta,
     getBackupCatalogData,
+    getBackupCatalog,
     reconcileChatIdentity,
     migrateRenamedChatIdentity,
     deleteBackupTypeForChat,
