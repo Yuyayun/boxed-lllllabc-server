@@ -67,9 +67,9 @@ test('pending 指纹与共享取消标记保护、普通清理保护规则不放
   assert.equal((await repo.execute('getPendingChanges',[key])).length,1);
   await repo.execute('replaceFullSnapshot',[{chatKey:key,messages:[message()],meta:{chatKey:key,fullBackupState:'frozen'}}]);
   const fingerprint = fingerprintBackupRecords([{...message(),chatKey:key}]);
-  await assert.rejects(repo.execute('deleteBackupTypeForChat',[{chatKey:key,type:'full',expectedFingerprint:fingerprint}]), /冻结/);
+  await assert.rejects(repo.execute('deleteBackupTypeForChat',[{chatKey:key,type:'full',expectedFingerprint:fingerprint}]), /已暂停更新并保留/);
   await repo.execute('updateChatMetaSummary',[key,{fullBackupState:'awaiting-confirmation'}]);
-  await assert.rejects(repo.execute('deleteBackupTypeForChat',[{chatKey:key,type:'full',expectedFingerprint:fingerprint}]), /等待后端确认/);
+  await assert.rejects(repo.execute('deleteBackupTypeForChat',[{chatKey:key,type:'full',expectedFingerprint:fingerprint}]), /等待酒馆保存确认/);
   await assert.rejects(repo.execute('deleteBackupTypeForChat',[{chatKey:key,type:'pending',expectedFingerprint:fingerprint}]), /无法识别/);
   await assert.rejects(repo.execute('deletePendingChanges',[[pending.id]]), /不支持/);
 });

@@ -1,6 +1,6 @@
 # 箱装辣白菜 SQLite 服务器插件
 
-箱装辣白菜的**可选** SillyTavern 服务器插件，与 [前端扩展](https://github.com/Yuyayun/boxed-lllllabc) 分仓库、独立安装和更新。只装前端即可使用 IndexedDB；安装本插件不会切换存储方式或迁移任何前端数据。
+箱装辣白菜的**可选** SillyTavern 服务器插件，与 [前端扩展](https://github.com/Yuyayun/boxed-lllllabc) 分仓库、独立安装和更新。只装前端即可使用 IndexedDB；安装本插件不会切换备份位置或迁移任何前端数据。
 
 当前版本 `1.0.0-dev.5`，存储协议 `5`，SQLite schema `3`。P7 已完成指定大目录样本和两个酒馆版本的软件回归，P4/P5 的快照与批量清理继续保留；真实手机等发布验收尚未结束。只在独立测试环境验收此开发版本。
 
@@ -77,7 +77,7 @@ boxedLllllabc:
 
 ## 切换与中断恢复
 
-前端设置中通过「切换存储方式」明确确认覆盖目标端。`POST /transfer` 仅接受 `{protocol:5, action, args}`；action 限定为 status/source/prepare/append/page/seal/check/commit/rollback/finish。两端均保留持久任务锁；目标原数据在最终激活前保留事务回滚副本。普通读写在任务锁释放前拒绝执行，不自动回退到 IndexedDB。
+前端设置中通过「切换备份位置」明确确认覆盖目标端。`POST /transfer` 仅接受 `{protocol:5, action, args}`；action 限定为 status/source/prepare/append/page/seal/check/commit/rollback/finish。两端均保留持久任务锁；目标原数据在最终激活前保留事务回滚副本。普通读写在任务锁释放前拒绝执行，不自动回退到 IndexedDB。
 
 活动端和恢复日志由当前浏览器独立控制库保存，服务端保留提交回执。重启后，尚未持久激活的操作回滚原目标；已激活的操作完成收尾。后端失联时保留锁和日志，在恢复连接后重试。不要手动删除锁、暂存表或浏览器控制库来跳过恢复。成功后来源原副本继续保留，不同步、不双写。任务使用临时空间；配额、磁盘或读回校验失败会拒绝切换。
 

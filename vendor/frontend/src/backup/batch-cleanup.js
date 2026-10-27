@@ -28,7 +28,7 @@ function chooseChats(catalog, selection) {
   return [...chosen].sort((a, b) => a.chatKey < b.chatKey ? -1 : a.chatKey > b.chatKey ? 1 : 0);
 }
 export function createBatchCleanupPlan({ catalog = {}, selection, mode } = {}) {
-  if (!["indexeddb", "sqlite"].includes(mode)) throw new Error("无法确认当前活动存储方式，未建立清理计划。");
+  if (!["indexeddb", "sqlite"].includes(mode)) throw new Error("无法确认当前备份位置，未建立清理计划。");
   const selected = normalizeSelection(selection), chats = chooseChats(catalog, selected);
   const actions = [], skipped = [];
   for (const chat of chats) {
@@ -52,7 +52,7 @@ export function createBatchCleanupPlan({ catalog = {}, selection, mode } = {}) {
     blockedReason, canConfirm: !blockedReason };
 }
 export function validateBatchCleanupPlan({ plan, catalog, mode }) {
-  if (!plan || plan.version !== 1 || plan.mode !== mode || !Array.isArray(plan.guards) || !Array.isArray(plan.actions)) throw staleError("批量清理计划或活动端已变化，请重新预览。");
+  if (!plan || plan.version !== 1 || plan.mode !== mode || !Array.isArray(plan.guards) || !Array.isArray(plan.actions)) throw staleError("批量清理计划或当前备份位置已变化，请重新预览。");
   let fresh;
   try { fresh = createBatchCleanupPlan({ catalog, selection: plan.selection, mode }); }
   catch (error) { throw staleError(error.message); }

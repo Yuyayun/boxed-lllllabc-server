@@ -373,8 +373,8 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
     const meta = await requestToPromise(metaStore.get(chatKey));
     if (type === "full" && ["frozen", "awaiting-confirmation"].includes(meta?.fullBackupState)) {
       throw new Error(meta.fullBackupState === "frozen"
-        ? "完整聊天备份已进入冻结保护状态，不能清理。"
-        : "完整聊天备份正在等待后端确认，不能清理。");
+        ? "完整备份已暂停更新并保留，不能清理。"
+        : "完整备份正在等待酒馆保存确认，不能清理。");
     }
 
     const keys = await requestToPromise(index.getAllKeys(chatKey));

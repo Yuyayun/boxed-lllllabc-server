@@ -27,7 +27,7 @@ export function createBackupCleanupPlan({ chat, type } = {}) {
     expectedFingerprint: String(summary.fingerprint || fingerprintBackupRecords([])),
     blockedReason,
     canConfirm: !blockedReason,
-    notice: "只删除扩展保存在当前活动存储中的这一类备份，不会删除或修改 SillyTavern 聊天文件，也不会更改备份开关。",
+    notice: "只删除当前备份位置中的这一类记录，不会删除或修改酒馆聊天文件，也不会更改备份开关。",
   };
 }
 
@@ -102,12 +102,12 @@ function getCleanupBlockedReason({ chat, type, summary }) {
     return `当前没有${TYPE_LABELS[type]}可清理。`;
   }
   if (type === "pending") {
-    return "未保存变更可能包含尚未写入酒馆后端的内容，当前版本禁止直接清理。";
+    return "未保存变更是备份已记录、但尚未确认保存到酒馆聊天文件中的改动，当前版本禁止直接清理。";
   }
   if (type === "full" && (chat.isFrozen || chat.isAwaitingConfirmation)) {
     return chat.isFrozen
-      ? "完整聊天备份正处于冻结保护状态。请打开对应聊天，在“当前聊天备份”中确认当前内容无误后处理。"
-      : "完整聊天备份正在等待后端确认，完成前不能清理。";
+      ? "完整备份已暂停更新并保留。请打开对应聊天，在“当前聊天备份”中确认当前内容无误后处理。"
+      : "完整备份正在等待酒馆保存确认，完成前不能清理。";
   }
   return "";
 }

@@ -39,13 +39,13 @@ export function describeStorageFailure(error) {
   if (isQuotaExceededError(error)) {
     return {
       type: "quota",
-      shortText: "本地空间不足，备份未写入",
+      shortText: "空间不足，备份未写入",
       detail: "浏览器报告本地存储空间不足。本次备份没有写入成功，已有备份没有被自动删除。",
     };
   }
   return {
     type: "database",
-    shortText: "本地备份数据库不可用",
+    shortText: "备份不可用",
     detail: error?.message || "浏览器本地备份数据库暂时无法读写。",
   };
 }
