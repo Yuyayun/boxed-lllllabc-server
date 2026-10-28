@@ -32,9 +32,10 @@ export function installTransfer(repository) {
     if (!TRANSFER_ACTIONS.includes(action)) throw new Error('切换操作无效。');
     const id = transferId(args.id);
     if (action === 'status') return receipt(id);
+    if(repository.activeDataset()!==0)throw new Error('当前数据区需要新版分批迁移流程，旧流程未修改任何备份。');
     if (action === 'source' || action === 'prepare') return transaction(() => {
       const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*'").all();
-      if (tables.some(({name}) => !['records','plugin_meta','transfer_rows'].includes(name))) throw new Error('发现未知数据库表，已保留全部数据并停止切换。');
+      if (tables.some(({name}) => !['records','records_next','plugin_meta','transfer_rows'].includes(name))) throw new Error('发现未知数据库表，已保留全部数据并停止切换。');
       lock(id, true);
       const old = receipt(id);
       if (old) {

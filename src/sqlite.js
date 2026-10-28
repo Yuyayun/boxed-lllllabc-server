@@ -4,6 +4,8 @@ import { createBackupOperations } from '../vendor/frontend/src/storage/operation
 import { STORAGE_OPERATIONS, encodeStorageValue, decodeStorageValue } from '../vendor/frontend/src/storage/protocol.js';
 import { failure } from './errors.js';
 import { installTransfer } from './transfer.js';
+import { datasetId, ACTIVE_DATASET_KEY, commitDataset, rollbackDataset } from '../vendor/frontend/src/storage/dataset-layout.js';
+import { transferId } from '../vendor/frontend/src/storage/transfer-format.js';
 import { createSnapshotOperations } from '../vendor/frontend/src/storage/snapshot-operations.js';
 import { DATA_STORES } from '../vendor/frontend/src/storage/transfer-format.js';
 
@@ -22,7 +24,7 @@ export class SqliteRepository {
       const version = this.db.prepare('PRAGMA user_version').get().user_version;
       const appId = this.db.prepare('PRAGMA application_id').get().application_id;
       const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
-      if (version < 0 || version > 3 || (appId && appId !== APP_ID) || (tables.length && appId !== APP_ID) || (version && appId !== APP_ID)) throw failure('database-unavailable', 'SQLite 不属于兼容的箱装数据库，未覆盖原文件。');
+      if (version < 0 || version > 4 || (appId && appId !== APP_ID) || (tables.length && appId !== APP_ID) || (version && appId !== APP_ID)) throw failure('database-unavailable', 'SQLite 不属于兼容的箱装数据库，未覆盖原文件。');
       if (!readOnly) {
         this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA wal_autocheckpoint=1000;');
         if (version < 3) {
@@ -43,7 +45,15 @@ export class SqliteRepository {
             this.db.exec('COMMIT');
           } catch (error) { this.rollback(error); }
         }
-      } else if (version !== 3) throw failure('database-unavailable', '只读数据库需要先升级，未执行升级。');
+        if (version < 4) {
+          this.db.exec('BEGIN IMMEDIATE');
+          try { this.db.exec(`CREATE TABLE IF NOT EXISTS records_next (store TEXT NOT NULL CHECK(store IN (${STORES.map(name=>`'${name}'`).join(',')})), primary_key TEXT NOT NULL, chat_key TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(store,primary_key)) STRICT;
+          CREATE INDEX IF NOT EXISTS next_by_chat ON records_next(store,chat_key,primary_key);
+          CREATE INDEX IF NOT EXISTS next_snapshot_page ON records_next(store,chat_key,CAST(json_extract(primary_key,'$[1]') AS INTEGER)) WHERE store='snapshot_messages';
+          PRAGMA user_version=4;`); this.db.exec('COMMIT'); }
+          catch (error) { this.rollback(error); }
+        }
+      } else if (version !== 4) throw failure('database-unavailable', '只读数据库需要先升级，未执行升级。');
       this.operations = createBackupOperations({ runTransaction: this.transaction.bind(this), requestToPromise: (value) => value, storageMode: 'sqlite', catalogDriver: {
         keys: store => store.chatKeys(), count: store => store.count(), check: () => this.checkCancelled(),
       } });
@@ -65,20 +75,47 @@ export class SqliteRepository {
     try {
       this.db.prepare("INSERT INTO plugin_meta(key,value) VALUES('probe','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
     } finally { this.db.exec('ROLLBACK'); }
-    const counts = this.db.prepare('SELECT store,count(*) AS count,sum(length(CAST(payload AS BLOB))) AS bytes FROM records GROUP BY store').all();
+    const counts = this.prepare('SELECT store,count(*) AS count,sum(length(CAST(payload AS BLOB))) AS bytes FROM records GROUP BY store').all();
     const bytes = ['','-wal','-shm'].reduce((sum, suffix) => sum + (fs.existsSync(this.file + suffix) ? fs.statSync(this.file + suffix).size : 0), 0);
     let availableBytes = null;
     try { const space = fs.statfsSync(this.file); availableBytes = space.bavail * space.bsize; }
     catch { /* Some hosts cannot report filesystem capacity; write failures still abort. */ }
-    return { readable: true, writable: true, schema: 3, bytes, counts, transfer: 2, snapshots: 1, availableBytes };
+    return { readable: true, writable: true, schema: 4, bytes, counts, transfer: 2, snapshots: 1, availableBytes };
+  }
+  activeDataset() {
+    const row = this.db.prepare('SELECT value FROM plugin_meta WHERE key=?').get(ACTIVE_DATASET_KEY);
+    return datasetId(row ? JSON.parse(row.value) : undefined);
+  }
+  prepare(sql) {
+    // Only fixed application SQL reaches this helper; never accept SQL or table
+    // names from the client. Keep prepared-statement cache keys area-specific.
+    return this.db.prepare(sql.replace(/\brecords\b/g, this.activeDataset() === 0 ? 'records' : 'records_next'));
+  }
+  changeDataset(action, id, manifest) {
+    transferId(id);
+    if (!['commit','rollback'].includes(action)) throw new Error('数据区操作无效。');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const read = key => { const row=this.db.prepare('SELECT value FROM plugin_meta WHERE key=?').get(key);return row?JSON.parse(row.value):null; };
+      const put = (key,value) => this.db.prepare('INSERT INTO plugin_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,JSON.stringify(value));
+      if(read('transfer-lock')!==id)throw new Error('任务未持有持久数据锁。');
+      const state=read('transfer:'+id),active=this.activeDataset(),revision=read('revision')??0;
+      if(state?.id!==id)throw new Error('目标任务身份与登记簿不一致。');
+      const result=action==='commit'?commitDataset(state,{active,revision,expectedManifest:manifest}):rollbackDataset(state,{active,revision});
+      if(action==='commit'&&state.phase!=='committed'||action==='rollback'&&state.phase==='committed') {
+        put(ACTIVE_DATASET_KEY,action==='commit'?result.dataset:result.previousDataset);put('revision',revision+1);
+      }
+      put('transfer:'+id,result);this.checkCancelled();this.db.exec('COMMIT');return result;
+    }catch(error){this.rollback(error);}
   }
   store(name, budget) {
     if (!STORES.includes(name)) throw failure('invalid-request', '无效记录类型。', 400);
     const read = (sql, params = [], keys = false) => {
+      sql=sql.replace(/\brecords\b/g,this.activeDataset()===0?'records':'records_next');
       const activeBudget=this.bulkCatalog ? {rows:0,bytes:0} : budget;
       const result = [];
       this.readStatements ??= new Map();
-      if (!this.readStatements.has(sql)) this.readStatements.set(sql, this.db.prepare(sql));
+      if (!this.readStatements.has(sql)) this.readStatements.set(sql, this.prepare(sql));
       for (const row of this.readStatements.get(sql).iterate(...params)) {
         activeBudget.bytes += Buffer.byteLength(keys ? row.primary_key : row.payload);
         if (++activeBudget.rows > MAX_ROWS || activeBudget.bytes > (this.bulkCatalog?128*1024*1024:MAX_BYTES)) throw failure('too-large', '本次读取超过限额，请分批操作。', 413);
@@ -87,10 +124,10 @@ export class SqliteRepository {
       return result;
     };
     return {
-      count: () => this.db.prepare('SELECT count(*) AS n FROM records WHERE store=?').get(name).n,
+      count: () => this.prepare('SELECT count(*) AS n FROM records WHERE store=?').get(name).n,
       chatKeys: () => {
         const keys=[];
-        for(const row of this.db.prepare('SELECT DISTINCT chat_key FROM records WHERE store=? ORDER BY chat_key').iterate(name)) {
+        for(const row of this.prepare('SELECT DISTINCT chat_key FROM records WHERE store=? ORDER BY chat_key').iterate(name)) {
           if(keys.length>=MAX_ROWS)throw failure('too-large','目录聊天数超过读取限额，未执行清理。',413);
           keys.push(row.chat_key);
         }
@@ -99,11 +136,12 @@ export class SqliteRepository {
       get: (key) => read('SELECT payload FROM records WHERE store=? AND primary_key=?', [name, JSON.stringify(key)])[0],
       getAll: () => read('SELECT payload FROM records WHERE store=? ORDER BY primary_key', [name]),
       page: ({ snapshotId, after, limit = 50 }) => {
-        const sql = snapshotId
+        let sql = snapshotId
           ? "SELECT payload FROM records WHERE store='snapshot_messages' AND chat_key=? AND CAST(json_extract(primary_key,'$[1]') AS INTEGER)>? ORDER BY CAST(json_extract(primary_key,'$[1]') AS INTEGER) LIMIT ?"
           : 'SELECT payload FROM records WHERE store=? AND primary_key>? ORDER BY primary_key LIMIT ?';
+        sql=sql.replace(/\brecords\b/g,this.activeDataset()===0?'records':'records_next');
         this.readStatements ??= new Map();
-        if (!this.readStatements.has(sql)) this.readStatements.set(sql,this.db.prepare(sql));
+        if (!this.readStatements.has(sql)) this.readStatements.set(sql,this.prepare(sql));
         const rows=[]; let bytes=0;
         const params=snapshotId?[snapshotId,after,limit]:[name,JSON.stringify(after),limit];
         for(const row of this.readStatements.get(sql).iterate(...params)) {
@@ -126,10 +164,10 @@ export class SqliteRepository {
         }
         const payload = JSON.stringify(encodeStorageValue(record));
         if (Buffer.byteLength(payload) > 8 * 1024 * 1024) throw failure('too-large', '单条备份超过 8 MiB，未写入。', 413);
-        this.db.prepare('INSERT INTO records(store,primary_key,chat_key,payload) VALUES(?,?,?,?) ON CONFLICT(store,primary_key) DO UPDATE SET chat_key=excluded.chat_key,payload=excluded.payload').run(name, JSON.stringify(key), storageKey, payload);
+        this.prepare('INSERT INTO records(store,primary_key,chat_key,payload) VALUES(?,?,?,?) ON CONFLICT(store,primary_key) DO UPDATE SET chat_key=excluded.chat_key,payload=excluded.payload').run(name, JSON.stringify(key), storageKey, payload);
         return key;
       },
-      delete: (key) => this.db.prepare('DELETE FROM records WHERE store=? AND primary_key=?').run(name, JSON.stringify(key)),
+      delete: (key) => this.prepare('DELETE FROM records WHERE store=? AND primary_key=?').run(name, JSON.stringify(key)),
       index: (indexName) => {
         if (indexName !== 'by_chat' && !(name==='snapshot_messages'&&indexName==='by_snapshot')) throw failure('invalid-request', '索引无效。', 400);
         return {

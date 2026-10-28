@@ -18,7 +18,8 @@
     "src/backup/batch-cleanup.js",
     "src/backup/frozen-resolution.js",
     "src/backup/canonicalize.js",
-    "src/storage/health.js"
+    "src/storage/health.js",
+    "src/storage/dataset-layout.js"
   ],
-  "worktreeModified": false
+  "worktreeModified": true
 }
