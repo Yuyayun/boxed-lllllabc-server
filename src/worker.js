@@ -3,11 +3,16 @@ import { SqliteRepository } from './sqlite.js';
 import { validateBatchCall } from '../vendor/frontend/src/storage/protocol.js';
 
 let repository;
-try { repository = new SqliteRepository(workerData.file); parentPort.postMessage({ ready: true }); }
+let currentJob=null,workSeq=0;
+const report=(metrics={},stage)=>parentPort.postMessage({type:'progress',id:currentJob?.id,stage,metrics:{...metrics,progressSeq:++workSeq}});
+const heartbeat=setInterval(()=>parentPort.postMessage({type:'heartbeat',id:currentJob?.id}),workerData.heartbeatMs??1000);heartbeat.unref();
+report({},'initialize');
+try { repository = new SqliteRepository(workerData.file); repository.reportProgress=report; await repository.initialize();parentPort.postMessage({ ready: true }); }
 catch (error) { parentPort.postMessage({ startupError: { code: error.code, message: error.message } }); }
 let queue = Promise.resolve();
 parentPort.on('message', (job) => {
   queue = queue.then(async () => {
+    currentJob=job;parentPort.postMessage({type:'started',id:job.id});
     try {
       if (!repository) throw new Error('SQLite 初始化失败。');
       const cancel = new Int32Array(job.cancel);
@@ -29,7 +34,7 @@ parentPort.on('message', (job) => {
       }
       parentPort.postMessage({ id: job.id, value });
     } catch (error) {
-      parentPort.postMessage({ id: job.id, error: { code: error.code, message: error.message, status: error.status } });
-    }
+      parentPort.postMessage({ id: job.id, error: { code: error.code, message: error.message, status: error.status,sqliteCode:error.errcode } });
+    } finally {currentJob=null;}
   });
 });

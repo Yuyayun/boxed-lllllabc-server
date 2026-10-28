@@ -2,20 +2,51 @@ import { authorize, databasePath } from './host.js';
 import { SqliteWorker } from './worker-client.js';
 import { failure, safeError } from './errors.js';
 import { STORAGE_PROTOCOL, STORAGE_OPERATIONS, validateBatchCall, encodeStorageValue, decodeStorageValue } from '../vendor/frontend/src/storage/protocol.js';
+import { RuntimeLog, validateLogEvent } from './runtime-log.js';
+import path from 'node:path';
 
 export function installRoutes(router, { host, hostError, createWorker = (file) => new SqliteWorker(file) }) {
   let worker;
   let workerError;
+  let logger,maintenance;
+  const capabilities={batchTransfer:3,recovery:1,supervision:1,logs:1};
+  const getLogger=()=>logger??=new RuntimeLog(path.dirname(databasePath(host)));
+  const writeLog=event=>{try{return getLogger().record(event).catch(()=>{});}catch{return Promise.resolve();}};
   const getWorker = () => {
     if (workerError) throw workerError;
-    try { return worker ??= createWorker(databasePath(host)); }
+    try {
+      if(!worker){worker=createWorker(databasePath(host));let lastDaily=0,lastTaskProgress=0;
+        worker.observe=event=>{
+          if(!event.taskId&&!event.errorCode){if(event.stage!=='finished'||Date.now()-lastDaily<60000)return;lastDaily=Date.now();}
+          if(['inspect','status'].includes(event.operation)&&!event.errorCode)return;
+          if(event.taskId&&!event.errorCode){
+            if(event.stage==='progress'){if(Date.now()-lastTaskProgress<1000)return;lastTaskProgress=Date.now();}
+            else if(event.stage==='started'?!['begin','commit','activate','beginAbort'].includes(event.operation):!['begin','verifyBatch','commit','activate','beginAbort','release'].includes(event.operation))return;
+          }
+          void writeLog(event);
+        };
+      }
+      return worker;
+    }
     catch (error) { workerError = error; throw error; }
   };
   const route = (handler) => async (request, response) => {
     response.set('Cache-Control', 'no-store');
+    let streaming=false,timer;
+    const send=value=>{
+      const data={protocol:STORAGE_PROTOCOL,capabilities,...value};
+      if(streaming){if(!response.destroyed){response.write(JSON.stringify({type:'result',...data})+'\n');response.end();}}
+      else if(!response.destroyed)response.json(data);
+    };
     try {
       if (hostError) throw hostError;
       const owner = await authorize(host, request);
+      streaming=String(request.get('accept')??'').includes('application/x-ndjson');
+      if(streaming){
+        response.set('Content-Type','application/x-ndjson; charset=utf-8');response.set('X-Accel-Buffering','no');
+        const beat=()=>{if(!response.destroyed&&!response.writableNeedDrain)response.write(JSON.stringify({type:'heartbeat',protocol:STORAGE_PROTOCOL,supervisor:worker?.supervision?.()??{state:'initializing',progressSeq:0}})+'\n');};
+        beat();timer=setInterval(beat,1000);timer.unref();
+      }
       const controller = new AbortController();
       const abort = () => controller.abort();
       const close = () => { if (!response.writableEnded) abort(); };
@@ -23,14 +54,33 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
       response.once('close', close);
       try {
         const value = await handler(request, owner, controller.signal);
-        if (!response.destroyed) response.json({ ok: true, protocol: STORAGE_PROTOCOL, ...value });
+        if (!response.destroyed) send({ ok: true, ...value });
       } finally { request.removeListener('aborted', abort); response.removeListener('close', close); }
     } catch (error) {
       console.error('[boxed-lllllabc-server]', error.message);
       const safe = safeError(error);
-      if (!response.destroyed) response.status(safe.status || 503).json({ ok: false, protocol: STORAGE_PROTOCOL, code: safe.code, reason: safe.message });
-    }
+      if(!String(request.url??'').includes('/logs'))await writeLog({stage:'error',operation:'request',errorCode:safe.code});
+      if (!response.destroyed){if(!streaming)response.status(safe.status||503);send({ ok:false,code:safe.code,reason:safe.message });}
+    }finally{clearInterval(timer);}
   };
+  router.get('/logs',route(async request=>{
+    const query=request.query??Object.fromEntries(new URL(request.url,'http://localhost').searchParams);
+    if(Object.keys(query).some(key=>!['category','cursor','limit'].includes(key)))throw failure('invalid-request','日志查询参数无效。',400);
+    return {value:await getLogger().page({category:query.category??'all',cursor:query.cursor,limit:query.limit===undefined?50:Number(query.limit)})};
+  }));
+  router.post('/logs/event',route(async request=>{
+    const {protocol,...event}=request.body??{};
+    if(protocol!==STORAGE_PROTOCOL||Buffer.byteLength(JSON.stringify(request.body))>4096)throw failure('invalid-request','日志事件参数无效。',400);
+    try{validateLogEvent(event);}catch{throw failure('invalid-request','日志事件参数无效，不接受正文或自定义文本。',400);}
+    await getLogger().record(event);return {value:true};
+  }));
+  router.post('/logs/cleanup',route(async request=>{
+    const body=request.body;
+    if(body?.protocol!==STORAGE_PROTOCOL||body.confirmed!==true||Object.keys(body).some(key=>!['protocol','confirmed','cursor'].includes(key)))throw failure('invalid-request','清理日志需要明确确认。',400);
+    return {value:await getLogger().cleanup({manual:true,cursor:body.cursor??0,maxFiles:4})};
+  }));
+  let cleanupCursor=0;
+  maintenance=setInterval(()=>{if(logger)void logger.cleanup({cursor:cleanupCursor,maxFiles:2}).then(result=>{cleanupCursor=result.cursor??0;}).catch(()=>{});},60000);maintenance.unref();
   router.get('/status', route(async (request, owner, signal) => ({
     pluginVersion: '1.0.0', state: 'connected',
     database: await getWorker().call('_status', [], owner, { signal, authorize: () => authorize(host, request) }),
@@ -73,5 +123,5 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
     if (Buffer.byteLength(JSON.stringify(value)) > 32 * 1024 * 1024) throw failure('too-large', '迁移响应超过读取上限。', 413);
     return { value };
   }));
-  return { close: async () => { if (worker) await worker.close(); } };
+  return { close: async () => { clearInterval(maintenance);if (worker) await worker.close();if(logger)await logger.tail; } };
 }

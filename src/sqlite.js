@@ -9,6 +9,7 @@ import { datasetId, ACTIVE_DATASET_KEY, commitDataset, rollbackDataset } from '.
 import { transferId } from '../vendor/frontend/src/storage/transfer-format.js';
 import { createSnapshotOperations } from '../vendor/frontend/src/storage/snapshot-operations.js';
 import { DATA_STORES } from '../vendor/frontend/src/storage/transfer-format.js';
+import {installStorageStats,initializeStorageStats,readStorageStats} from './storage-stats.js';
 
 const STORES = DATA_STORES;
 const APP_ID = 0x424f5844;
@@ -61,6 +62,7 @@ export class SqliteRepository {
       this.snapshotOperations = createSnapshotOperations({ runTransaction: this.transaction.bind(this), requestToPromise: (value) => value });
       installTransfer(this);
       this.batchTransfer = createSqliteBatchTransfer(this);
+      if(!readOnly)installStorageStats(this);
     } catch (error) { this.db.close(); throw error; }
   }
   owner(handle) {
@@ -77,13 +79,14 @@ export class SqliteRepository {
     try {
       this.db.prepare("INSERT INTO plugin_meta(key,value) VALUES('probe','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
     } finally { this.db.exec('ROLLBACK'); }
-    const counts = this.prepare('SELECT store,count(*) AS count,sum(length(CAST(payload AS BLOB))) AS bytes FROM records GROUP BY store').all();
+    const counts = readStorageStats(this);
     const bytes = ['','-wal','-shm'].reduce((sum, suffix) => sum + (fs.existsSync(this.file + suffix) ? fs.statSync(this.file + suffix).size : 0), 0);
     let availableBytes = null;
     try { const space = fs.statfsSync(this.file); availableBytes = space.bavail * space.bsize; }
     catch { /* Some hosts cannot report filesystem capacity; write failures still abort. */ }
-    return { readable: true, writable: true, schema: 4, bytes, counts, transfer: 2, batchTransfer: 3, recovery: 1, snapshots: 1, availableBytes };
+    return { readable: true, writable: true, schema: 4, bytes, counts, countsReady:counts!==null, transfer: 2, batchTransfer: 3, recovery: 1, snapshots: 1, availableBytes };
   }
+  async initialize(){await initializeStorageStats(this);}
   activeDataset() {
     const row = this.db.prepare('SELECT value FROM plugin_meta WHERE key=?').get(ACTIVE_DATASET_KEY);
     return datasetId(row ? JSON.parse(row.value) : undefined);
@@ -189,6 +192,7 @@ export class SqliteRepository {
       this.checkCancelled();
       if (mode === 'readwrite') this.db.prepare("INSERT INTO plugin_meta VALUES('revision','1') ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)").run();
       this.db.exec('COMMIT');
+      this.reportProgress?.({count:budget.rows},'operation-committed');
       return result;
     } catch (error) { this.rollback(error); }
   }

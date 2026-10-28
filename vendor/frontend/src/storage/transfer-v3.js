@@ -14,7 +14,12 @@ export function createTransferCoordinator({ control, adapters, locks = globalThi
     return adapters[mode].batchTransfer(action, args);
   };
   const boundary = () => { if (pauseRequested) throw error("迁移已暂停，恢复时会核对已登记进度；备份操作保持锁定。", "paused"); };
-  async function event(stage, journal, message) { if (message) progress(message); await hook(stage, journal); }
+  async function notify(stage,journal,metrics={}) {
+    if(!adapters.sqlite?.logEvent)return;
+    try{await adapters.sqlite.logEvent({taskId:journal.id,from:journal.from,to:journal.to,kind:journal.kind,stage,...metrics});}
+    catch{/* The durable database journal, not the optional log, controls recovery. */}
+  }
+  async function event(stage, journal, message,metrics) { if (message) progress(message); await notify(stage,journal,metrics);await hook(stage, journal); }
   async function journalUpdate(journal, changes) {
     return control.update(state => {
       if (state.journal?.id !== journal.id || state.journal.version !== 3) throw error("控制登记簿已变化，未猜测存储位置。");
@@ -44,7 +49,7 @@ export function createTransferCoordinator({ control, adapters, locks = globalThi
     let state;
     do {
       boundary(); state = await call(journal.from, "sourceCheckStep", [journal.id, budget]);
-      await event("source-check", journal, `正在复核来源：已核对 ${state.checkSummary.count} / ${state.summary.count} 条`);
+      await event("source-check", journal, `正在复核来源：已核对 ${state.checkSummary.count} / ${state.summary.count} 条`,{count:state.checkSummary.count});
     } while (!state.sourceChecked);
     await event("source-checked", journal);
   }
@@ -54,7 +59,7 @@ export function createTransferCoordinator({ control, adapters, locks = globalThi
     do {
       boundary(); state = await call(journal.to, "sealStep", [journal.id, budget]);
       const count = Object.values(state.scanCounts).reduce((sum, n) => sum + n, 0);
-      await event(committed ? "commit-check" : "target-check", journal, `正在${committed ? "提交后" : "最终"}验收：已核对 ${count} / ${journal.manifest.count} 条`);
+      await event(committed ? "commit-check" : "target-check", journal, `正在${committed ? "提交后" : "最终"}验收：已核对 ${count} / ${journal.manifest.count} 条`,{count});
     } while (!state.auditDone);
     await event(committed ? "target-checked" : "verified", journal);
   }
@@ -86,6 +91,7 @@ export function createTransferCoordinator({ control, adapters, locks = globalThi
     }
     await call(journal.to, "release", [journal.id]); await event("release-target", journal);
     await clearJournal(journal);
+    await notify('completed',journal,{count:journal.manifest?.count??0,verified:journal.manifest?.count??0});
     return { ok: true, active: (await control.read()).active };
   }
   async function cancel(journal, reason = "已放弃本次迁移，两端原有正式备份保持保留。") {
@@ -101,6 +107,7 @@ export function createTransferCoordinator({ control, adapters, locks = globalThi
     if (source) await call(journal.from, "release", [journal.id]);
     if (target) await call(journal.to, "release", [journal.id]);
     await clearJournal(journal);
+    await notify('cancelled',journal);
     return { ok: false, cancelled: true, reason, active: (await control.read()).active };
   }
   async function contextCheck() {
@@ -121,7 +128,7 @@ export function createTransferCoordinator({ control, adapters, locks = globalThi
           while (true) {
             boundary(); const packet = await call(journal.from, "sourceNext", [journal.id, after, budget]);
             if (packet.done) break;
-            after = packet.index; await event("inventory", journal, `正在清点来源：已登记 ${packet.last} 条，尚未启用新位置`);
+            after = packet.index; await event("inventory", journal, `正在清点来源：已登记 ${packet.last} 条，尚未启用新位置`,{count:packet.last,batch:packet.index,bytes:packet.bytes});
           }
           source = await inspect(journal, journal.from, "source");
         }
@@ -154,7 +161,7 @@ export function createTransferCoordinator({ control, adapters, locks = globalThi
           await adapters[journal.to]?.checkCapacity?.({ bytes: packet.bytes, count: packet.rows.length });
           await call(journal.to, "append", [journal.id, packet]); await event("append", journal);
           const verified = await call(journal.to, "verifyBatch", [journal.id, packet.index]); after = packet.index;
-          await event("batch-verified", journal, `已搬运并核验 ${verified.verified} / ${journal.manifest.count} 条`);
+          await event("batch-verified", journal, `已搬运并核验 ${verified.verified} / ${journal.manifest.count} 条`,{verified:verified.verified,count:journal.manifest.count,batch:packet.index});
         }
       }
       current = await inspect(journal, journal.to, "target");
@@ -176,6 +183,7 @@ export function createTransferCoordinator({ control, adapters, locks = globalThi
       journal = result.journal; await event("activated", journal);
       return await wrapUp(journal);
     } catch (cause) {
+      if(!cause.simulateCrash)await notify(cause.code==='paused'?'paused':'error',journal,cause.code==='paused'?{}:{errorCode:typeof cause.code==='string'&&/^[a-zA-Z0-9_-]{1,64}$/.test(cause.code)?cause.code:'unexpected'});
       if (cause.simulateCrash || ["paused", "recovery-required"].includes(cause.code)) throw cause;
       const current = (await control.read()).journal;
       if (current && current.phase !== "activated" && ["source-changed", "target-changed", "source-baseline-incomplete", "context-changed", "transfer-conflict", "snapshot-conflict"].includes(cause.code)) {
@@ -211,9 +219,10 @@ export function createTransferCoordinator({ control, adapters, locks = globalThi
   async function recover({ confirmed = false } = {}) {
     const state = await control.read();
     if (!state.journal) return { recovered: false };
-    if (state.journal.version !== 3 && confirmed) return legacy.recover();
+    if (state.journal.version !== 3 && confirmed) {await notify('recover',state.journal);const result=await legacy.recover();await notify(state.journal.phase==='activated'?'completed':'cancelled',state.journal);return result;}
     return exclusive(async () => {
       if (!confirmed) throw error("发现未完成的迁移，请确认后继续核对，或放弃本次任务。", "recovery-required");
+      await notify('recover',(await control.read()).journal);
       return run((await control.read()).journal, true);
     });
   }

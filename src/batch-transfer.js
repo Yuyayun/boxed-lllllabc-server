@@ -67,7 +67,8 @@ export function createSqliteBatchTransfer(repository) {
             },
           };
           const result = await callback(port);
-          repository.checkCancelled(); db.exec('COMMIT'); return result;
+          repository.checkCancelled(); db.exec('COMMIT');
+          repository.reportProgress?.({count:result?.checkSummary?.count??result?.summary?.count,verified:result?.verified,batch:result?.verifiedBatch});return result;
         } catch (error) { repository.rollback(error); }
       });
       tail = run.catch(() => {});
