@@ -1,3 +1,5 @@
+import { stableText } from "./value-digest.js";
+
 // Two physical data areas share the existing domain operations. Area 0 is the
 // untouched 1.0.0 layout; area 1 is created empty, never by copying the old data.
 export const ACTIVE_DATASET_KEY = "active-dataset";
@@ -25,13 +27,13 @@ export function commitDataset(state, { active, revision, expectedManifest }) {
   datasetId(state.previousDataset); datasetId(state.dataset); datasetId(active);
   if (!Number.isSafeInteger(revision) || revision < 0 || revision >= Number.MAX_SAFE_INTEGER || !Number.isSafeInteger(state.baseRevision) || state.baseRevision < 0) throw new Error("数据修订记录无效。");
   if (state.dataset === state.previousDataset) throw new Error("目标数据区不能覆盖原正式数据区。");
-  if (expectedManifest && JSON.stringify(state.manifest) !== JSON.stringify(expectedManifest)) throw new Error("目标验收清单与提交请求不一致。");
+  if (expectedManifest && stableText(state.manifest) !== stableText(expectedManifest)) throw new Error("目标验收清单与提交请求不一致。");
   if (state.phase === "committed") {
     if (active !== state.dataset || revision !== state.commitRevision) throw new Error("已提交任务与活动数据区不一致。");
     return state;
   }
   if (state.phase !== "verified" || active !== state.previousDataset || revision !== state.baseRevision
-      || !expectedManifest || JSON.stringify(state.manifest) !== JSON.stringify(expectedManifest)) {
+      || !expectedManifest || stableText(state.manifest) !== stableText(expectedManifest)) {
     throw new Error("目标尚未验收或正式数据已变化，未启用新数据。");
   }
   return { ...state, phase: "committed", commitRevision: revision + 1 };

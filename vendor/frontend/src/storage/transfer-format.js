@@ -14,7 +14,7 @@ export function transferId(id) {
 export function recordText(row) {
   return stableText([row.store, row.key, row.value]);
 }
-export function validateTransferRow(row) {
+export function inspectTransferRow(row) {
   if (!DATA_STORES.includes(row?.store) || !Number.isSafeInteger(row.n) || row.n < 1) fail("包含未知数据仓库或无效序号，已停止切换。");
   const value = row.value;
   if (!value || row.store !== "snapshot_messages" && (typeof value.chatKey !== "string" || !value.chatKey)) fail("发现缺少聊天身份的原始记录，未丢弃记录，已停止切换。");
@@ -22,11 +22,13 @@ export function validateTransferRow(row) {
   if (!["chat_meta", "snapshots"].includes(row.store) && !(row.store === "pending_changes" && value.messageIndex === null) && (!Number.isSafeInteger(value.messageIndex) || value.messageIndex < 0)) fail("发现楼层无效的原始记录，已停止切换。");
   if (row.store === "pending_changes" && (typeof value.id !== "string" || !value.id)) fail("pending 主键无效，已停止切换。");
   if (JSON.stringify(encodeStorageValue(key)) !== JSON.stringify(encodeStorageValue(row.key))) fail("原始记录的主键与内容不一致，已停止切换。");
-  const bytes = new TextEncoder().encode(recordText(row)).byteLength;
+  const text = recordText(row);
+  const bytes = new TextEncoder().encode(text).byteLength;
   if (bytes > TRANSFER_RECORD_BYTES) fail("单条原始记录超过 8 MiB，未丢弃记录，已停止切换。");
-  return bytes;
+  return { text, bytes };
 }
-export async function digestRow(row) { validateTransferRow(row); return sha256(recordText(row)); }
+export function validateTransferRow(row) { return inspectTransferRow(row).bytes; }
+export async function digestRow(row) { return sha256(inspectTransferRow(row).text); }
 export async function readTransferManifest(page) {
   const counts = Object.fromEntries(DATA_STORES.map((name) => [name, 0]));
   const metaKeys = new Set();

@@ -4,6 +4,7 @@ import { createBackupOperations } from '../vendor/frontend/src/storage/operation
 import { STORAGE_OPERATIONS, encodeStorageValue, decodeStorageValue } from '../vendor/frontend/src/storage/protocol.js';
 import { failure } from './errors.js';
 import { installTransfer } from './transfer.js';
+import { createSqliteBatchTransfer } from './batch-transfer.js';
 import { datasetId, ACTIVE_DATASET_KEY, commitDataset, rollbackDataset } from '../vendor/frontend/src/storage/dataset-layout.js';
 import { transferId } from '../vendor/frontend/src/storage/transfer-format.js';
 import { createSnapshotOperations } from '../vendor/frontend/src/storage/snapshot-operations.js';
@@ -59,6 +60,7 @@ export class SqliteRepository {
       } });
       this.snapshotOperations = createSnapshotOperations({ runTransaction: this.transaction.bind(this), requestToPromise: (value) => value });
       installTransfer(this);
+      this.batchTransfer = createSqliteBatchTransfer(this);
     } catch (error) { this.db.close(); throw error; }
   }
   owner(handle) {

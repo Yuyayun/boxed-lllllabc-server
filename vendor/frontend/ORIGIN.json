@@ -19,7 +19,9 @@
     "src/backup/frozen-resolution.js",
     "src/backup/canonicalize.js",
     "src/storage/health.js",
-    "src/storage/dataset-layout.js"
+    "src/storage/dataset-layout.js",
+    "src/storage/batch-transfer.js",
+    "src/storage/transfer-batch-format.js"
   ],
   "worktreeModified": true
 }
