@@ -44,7 +44,7 @@ test('普通清理不涉及快照；Rename 接续头信息但正文不变，相�
   await assert.rejects(repo.execute('deleteSnapshot',[{id:snapshot.header.id,expectedHash:'wrong'}]),/已变化/);await repo.execute('deleteSnapshot',[{id:snapshot.header.id,expectedHash:snapshot.header.contentHash}]);assert.equal(await repo.execute('getSnapshotHeader',[snapshot.header.id]),undefined);assert.equal((await repo.execute('getSnapshotMessages',[{id:snapshot.header.id}])).length,0);
 });
 test('SQLite schema 2→3 保留旧普通记录、创建备份，并能使用新增快照模型',async t=>{
-  const f=fixture(t);let repo=f.open();await repo.execute('putChatMeta',[{chatKey:'kept',marker:'old'}]);repo.db.exec('PRAGMA user_version=2');repo.close();repo=f.open();assert.equal(repo.status().schema,4);assert.equal((await repo.execute('getChatMeta',['kept'])).marker,'old');assert.ok(fs.readdirSync(f.directory).some(name=>name.includes('before-v3')));await write(repo,current());
+  const f=fixture(t);let repo=f.open();await repo.execute('putChatMeta',[{chatKey:'kept',marker:'old'}]);repo.db.exec('PRAGMA user_version=2');repo.close();repo=f.open();await repo.initialize();assert.equal(repo.status().schema,4);assert.equal((await repo.execute('getChatMeta',['kept'])).marker,'old');assert.ok(fs.readdirSync(f.directory).some(name=>name.includes('before-v3')));await write(repo,current());
 });
 test('完整迁移包含快照，目标事务失败保持原快照，回滚及重试后源快照仍保留',async t=>{
   const f=fixture(t),source=f.open('source'),target=f.open('target'),from=await write(source,current('from')),old=await write(target,current('old'));

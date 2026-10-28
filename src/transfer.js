@@ -32,6 +32,7 @@ export function installTransfer(repository) {
     if (!TRANSFER_ACTIONS.includes(action)) throw new Error('切换操作无效。');
     const id = transferId(args.id);
     if (action === 'status') return receipt(id);
+    if(['rollback','finish'].includes(action))return repository.batchTransfer.legacyRecovery.run(id,action);
     if(repository.activeDataset()!==0)throw new Error('当前数据区需要新版分批迁移流程，旧流程未修改任何备份。');
     if (action === 'source' || action === 'prepare') return transaction(() => {
       const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*'").all();

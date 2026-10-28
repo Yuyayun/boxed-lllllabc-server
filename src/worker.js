@@ -8,7 +8,7 @@ const report=(metrics={},stage)=>parentPort.postMessage({type:'progress',id:curr
 const heartbeat=setInterval(()=>parentPort.postMessage({type:'heartbeat',id:currentJob?.id}),workerData.heartbeatMs??1000);heartbeat.unref();
 report({},'initialize');
 try { repository = new SqliteRepository(workerData.file); repository.reportProgress=report; await repository.initialize();parentPort.postMessage({ ready: true }); }
-catch (error) { parentPort.postMessage({ startupError: { code: error.code, message: error.message } }); }
+catch (error) { const message=/^(旧库|旧任务|启动检查|发现|包含|单条|原始|SQLite 不属于|只读)/.test(error.message)?error.message:'SQLite 启动检查失败，请查看运行日志中的阶段及错误代码；原数据未被当作空库覆盖。';parentPort.postMessage({ startupError: { code: error.code, message,sqliteCode:error.errcode } }); }
 let queue = Promise.resolve();
 parentPort.on('message', (job) => {
   queue = queue.then(async () => {

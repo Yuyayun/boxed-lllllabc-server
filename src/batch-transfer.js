@@ -3,6 +3,7 @@ import { ACTIVE_DATASET_KEY, datasetId } from '../vendor/frontend/src/storage/da
 import { DATA_STORES, recordText } from '../vendor/frontend/src/storage/transfer-format.js';
 import { validateCursor } from '../vendor/frontend/src/storage/transfer-batch-format.js';
 import { encodeStorageValue, decodeStorageValue } from '../vendor/frontend/src/storage/protocol.js';
+import {createLegacyRecovery} from '../vendor/frontend/src/storage/legacy-recovery.js';
 
 const table = dataset => datasetId(dataset) === 0 ? 'records' : 'records_next';
 const encode = value => JSON.stringify(encodeStorageValue(value));
@@ -39,6 +40,10 @@ export function createSqliteBatchTransfer(repository) {
             lockGet: () => get('transfer-lock'), lockPut: id => put('transfer-lock', id),
             lockDelete: () => statement("DELETE FROM plugin_meta WHERE key='transfer-lock'").run(),
             taskGet: id => get('transfer:' + id), taskPut: state => put('transfer:' + state.id, state),
+            legacyRow(id,kind,n){const row=statement('SELECT * FROM transfer_rows WHERE id=? AND kind=? AND n=?').get(id,kind,n);return row?{n:row.n,store:row.store,key:JSON.parse(row.primary_key),value:decode(row.payload)}:null;},
+            legacyKeys:(id,limit)=>statement('SELECT kind,n FROM transfer_rows WHERE id=? ORDER BY kind,n LIMIT ?').all(id,limit),
+            legacyDelete:(id,key)=>statement('DELETE FROM transfer_rows WHERE id=? AND kind=? AND n=?').run(id,key.kind,key.n),
+            legacyPage(id,kind,after,budget){const rows=[];let bytes=0;for(const item of statement('SELECT * FROM transfer_rows WHERE id=? AND kind=? AND n>? ORDER BY n LIMIT ?').iterate(id,kind,after,budget.limit)){const row={n:item.n,store:item.store,key:JSON.parse(item.primary_key),value:decode(item.payload)},size=Buffer.byteLength(recordText(row));if(rows.length&&bytes+size>budget.bytes)break;rows.push(row);bytes+=size;}return rows;},
             get(dataset, name, key) {
               const row = statement(`SELECT payload FROM ${table(dataset)} WHERE store=? AND primary_key=?`).get(name, JSON.stringify(key));
               return row ? decode(row.payload) : undefined;
@@ -75,5 +80,5 @@ export function createSqliteBatchTransfer(repository) {
       return run;
     },
   };
-  return createBatchTransfer({ driver });
+  return Object.freeze({...createBatchTransfer({driver}),legacyRecovery:createLegacyRecovery({driver,onProgress:r=>repository.reportProgress?.({count:r?.stage==='clear'?r.cleared:r?.stage==='cleanup'?r.removed:r?.stage==='count-active'?r.countSummary.count:r?.summary?.count,verified:['verify','verify-active','count-active'].includes(r?.stage)?r.summary.count:undefined},'legacy-'+r?.stage)})});
 }

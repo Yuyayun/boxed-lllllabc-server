@@ -99,6 +99,7 @@ test('已知旧 schema 升级前保留一致备份，未知/未来数据库拒�
   await repo.execute('putChatMeta',[{chatKey:'retained'}]);
   repo.db.exec('PRAGMA user_version=0'); repo.close();
   repo=track(new SqliteRepository(file));
+  await repo.initialize();
   assert.ok(fs.readdirSync(directory).some((name)=>name.endsWith('.bak')));
   assert.deepEqual(await repo.execute('getChatMeta',['retained']),{chatKey:'retained'});
   repo.db.exec('PRAGMA user_version=99'); repo.close();

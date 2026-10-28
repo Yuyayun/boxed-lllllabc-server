@@ -18,14 +18,15 @@ export class SqliteWorker {
     if(message.type==='heartbeat')return;
     if(message.type==='progress') {
       this.lastProgressAt=Date.now();this.progressSeq++;this.stage=message.stage??this.stage;
+      this.metrics=message.metrics??{};
       const entry=this.pending.get(message.id);if(entry){entry.lastProgressAt=this.lastProgressAt;entry.workSeq=(entry.workSeq??0)+1;}
       if(!entry||!entry.lastLoggedProgressAt||Date.now()-entry.lastLoggedProgressAt>=1000){if(entry)entry.lastLoggedProgressAt=Date.now();this.notify({taskId:entry?.taskId,operation:entry?.action??entry?.operation,stage:'progress',progressSeq:this.progressSeq,...message.metrics});}return;
     }
     if(message.ready){this.initializing=false;this.lastProgressAt=Date.now();this.resolveReady();return;}
-    if(message.startupError){const error=Object.assign(new Error(message.startupError.message),{code:'database-unavailable'});this.rejectReady(error);this.notify({stage:'error',operation:'initialize',errorCode:error.code});return;}
+    if(message.startupError){this.startupFailed=true;const error=Object.assign(new Error(message.startupError.message),{code:'database-unavailable'});this.rejectReady(error);this.notify({stage:'error',operation:this.stage??'initialize',errorCode:message.startupError.code??error.code,sqliteCode:message.startupError.sqliteCode});return;}
     const entry=this.pending.get(message.id);if(!entry)return;
     if(message.type==='started'){
-      entry.startedAt=Date.now();entry.lastProgressAt=entry.startedAt;this.activeId=message.id;this.stage=entry.action??entry.operation;
+      entry.startedAt=Date.now();entry.lastProgressAt=entry.startedAt;this.activeId=message.id;this.stage=entry.action??entry.operation;this.metrics={};
       this.notify({taskId:entry.taskId,operation:this.stage,stage:'started'});return;
     }
     this.pending.delete(message.id);clearInterval(entry.timer);entry.cleanup();if(this.activeId===message.id)this.activeId=null;this.lastProgressAt=Date.now();
@@ -35,7 +36,7 @@ export class SqliteWorker {
   }
   supervision() {
     const now=Date.now(),entry=this.pending.get(this.activeId),idleMs=now-(entry?.lastProgressAt??this.lastProgressAt),silentMs=now-this.lastMessageAt;
-    return {state:this.closed?'unavailable':this.initializing?'initializing':!entry?'idle':idleMs>this.timeoutMs?'no-progress':silentMs>Math.min(15000,this.timeoutMs)?'unresponsive':idleMs>10000?'slow':'working',stage:this.stage??null,queued:this.pending.size,lastMessageAt:this.lastMessageAt,lastProgressAt:entry?.lastProgressAt??this.lastProgressAt,progressSeq:this.progressSeq,elapsedMs:entry?now-entry.queuedAt:now-this.startedAt};
+    return {state:this.closed?'unavailable':this.initializing?'initializing':!entry?'idle':idleMs>this.timeoutMs?'no-progress':silentMs>Math.min(15000,this.timeoutMs)?'unresponsive':idleMs>10000?'slow':'working',stage:this.stage??null,queued:this.pending.size,lastMessageAt:this.lastMessageAt,lastProgressAt:entry?.lastProgressAt??this.lastProgressAt,progressSeq:this.progressSeq,count:this.metrics?.count,verified:this.metrics?.verified,elapsedMs:entry?now-entry.queuedAt:now-this.startedAt};
   }
   fail(error) {
     if(this.closed)return;this.closed=true;this.rejectReady(error);
@@ -64,6 +65,7 @@ export class SqliteWorker {
   }
   async close() {
     if(this.closed){await this.worker.terminate();return;}
+    if(this.startupFailed){this.fail(failure('database-unavailable','SQLite 初始化失败后已关闭。'));await this.worker.terminate();return;}
     let timer;
     try{await Promise.race([this.call('_close',[],''),new Promise(resolve=>{timer=setTimeout(resolve,5000);})]);}
     finally{clearTimeout(timer);this.fail(failure('database-unavailable','SQLite 插件已经关闭。'));await this.worker.terminate();}

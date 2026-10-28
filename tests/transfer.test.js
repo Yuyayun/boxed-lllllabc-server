@@ -18,7 +18,7 @@ async function staged(repo,id) {
 }
 test('SQLite 1→3 升级保留原记录并创建一致备份',async(t)=>{
   const f=fixture(t);let repo=f.open();await repo.execute('putChatMeta',[{chatKey:'kept',marker:'before'}]);repo.db.exec('DROP TABLE transfer_rows; PRAGMA user_version=1');repo.close();repo=f.open();
-  assert.equal(repo.status().schema,4);assert.deepEqual(await repo.execute('getChatMeta',['kept']),{chatKey:'kept',marker:'before'});assert.ok(fs.readdirSync(f.directory).some(name=>name.includes('before-v3')));
+  await repo.initialize();assert.equal(repo.status().schema,4);assert.deepEqual(await repo.execute('getChatMeta',['kept']),{chatKey:'kept',marker:'before'});assert.ok(fs.readdirSync(f.directory).some(name=>name.includes('before-v3')));
 });
 test('提交途中 SQLite 真实触发器报错，目标删除和写入全部回滚；重试提交可再回滚',async(t)=>{
   const f=fixture(t);const repo=f.open();await repo.execute('putChatMeta',[{chatKey:'old',marker:'retained'}]);const id='failure-case-123';await staged(repo,id);

@@ -10,6 +10,7 @@ import { transferId } from '../vendor/frontend/src/storage/transfer-format.js';
 import { createSnapshotOperations } from '../vendor/frontend/src/storage/snapshot-operations.js';
 import { DATA_STORES } from '../vendor/frontend/src/storage/transfer-format.js';
 import {installStorageStats,initializeStorageStats,readStorageStats} from './storage-stats.js';
+import {upgradeLegacyDatabase,finishLegacyUpgrade,auditStorage} from './sqlite-maintenance.js';
 
 const STORES = DATA_STORES;
 const APP_ID = 0x424f5844;
@@ -22,22 +23,17 @@ export class SqliteRepository {
     this.db = new DatabaseSync(file, { readOnly, allowExtension: false });
     try {
       this.db.exec(`PRAGMA busy_timeout=${Math.max(0, Math.min(5000, busyMs))}`);
-      if (this.db.prepare('PRAGMA quick_check').get().quick_check !== 'ok') throw failure('database-unavailable', 'SQLite 完整性检查失败，旧库已保留。');
       const version = this.db.prepare('PRAGMA user_version').get().user_version;
       const appId = this.db.prepare('PRAGMA application_id').get().application_id;
       const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
       if (version < 0 || version > 4 || (appId && appId !== APP_ID) || (tables.length && appId !== APP_ID) || (version && appId !== APP_ID)) throw failure('database-unavailable', 'SQLite 不属于兼容的箱装数据库，未覆盖原文件。');
       if (!readOnly) {
         this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA wal_autocheckpoint=1000;');
+        if(tables.some(row=>row.name==='records_before_v3')||tables.some(row=>row.name==='plugin_meta')&&this.db.prepare("SELECT 1 FROM plugin_meta WHERE key='schema-upgrade-v4'").get()){this.maintenancePending=true;return;}
+        if(version<3&&tables.length){this.upgradePending=true;return;}
         if (version < 3) {
-          // VACUUM INTO takes a consistent SQLite backup, including live WAL.
-          if (tables.length) this.db.prepare('VACUUM INTO ?').run(`${file}.before-v3-${Date.now()}.bak`);
           this.db.exec('BEGIN IMMEDIATE');
           try {
-            if (tables.some(row => row.name === 'records')) {
-              this.db.exec(`CREATE TABLE records_v3 (store TEXT NOT NULL CHECK(store IN (${STORES.map(name=>`'${name}'`).join(',')})), primary_key TEXT NOT NULL, chat_key TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(store,primary_key)) STRICT;
-                INSERT INTO records_v3 SELECT * FROM records; DROP TABLE records; ALTER TABLE records_v3 RENAME TO records;`);
-            }
             this.db.exec(`CREATE TABLE IF NOT EXISTS plugin_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
               CREATE TABLE IF NOT EXISTS records (store TEXT NOT NULL CHECK(store IN (${STORES.map(name=>`'${name}'`).join(',')})), primary_key TEXT NOT NULL, chat_key TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(store,primary_key)) STRICT;
               CREATE INDEX IF NOT EXISTS by_chat ON records(store,chat_key,primary_key);
@@ -56,6 +52,10 @@ export class SqliteRepository {
           catch (error) { this.rollback(error); }
         }
       } else if (version !== 4) throw failure('database-unavailable', '只读数据库需要先升级，未执行升级。');
+      this.configure(readOnly);
+    } catch (error) { this.db.close(); throw error; }
+  }
+  configure(readOnly=false){
       this.operations = createBackupOperations({ runTransaction: this.transaction.bind(this), requestToPromise: (value) => value, storageMode: 'sqlite', catalogDriver: {
         keys: store => store.chatKeys(), count: store => store.count(), check: () => this.checkCancelled(),
       } });
@@ -63,9 +63,9 @@ export class SqliteRepository {
       installTransfer(this);
       this.batchTransfer = createSqliteBatchTransfer(this);
       if(!readOnly)installStorageStats(this);
-    } catch (error) { this.db.close(); throw error; }
   }
   owner(handle) {
+    if(this.upgradePending||this.maintenancePending)throw failure('database-unavailable','SQLite 正在完成旧库升级，尚未开放操作。');
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const owner = this.db.prepare("SELECT value FROM plugin_meta WHERE key='owner'").get()?.value;
@@ -75,6 +75,7 @@ export class SqliteRepository {
     } catch (error) { this.rollback(error); }
   }
   status() {
+    if(this.upgradePending||this.maintenancePending)throw failure('database-unavailable','SQLite 正在完成旧库升级，尚未开放操作。');
     this.db.exec('BEGIN IMMEDIATE');
     try {
       this.db.prepare("INSERT INTO plugin_meta(key,value) VALUES('probe','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
@@ -86,7 +87,16 @@ export class SqliteRepository {
     catch { /* Some hosts cannot report filesystem capacity; write failures still abort. */ }
     return { readable: true, writable: true, schema: 4, bytes, counts, countsReady:counts!==null, transfer: 2, batchTransfer: 3, recovery: 1, snapshots: 1, availableBytes };
   }
-  async initialize(){await initializeStorageStats(this);}
+  async initialize(){
+    if(this.initializing)return this.initializing;
+    this.initializing=(async()=>{
+      if(this.upgradePending){await auditStorage(this);await upgradeLegacyDatabase(this);}
+      if(this.maintenancePending)await finishLegacyUpgrade(this);
+      if(!this.operations)this.configure();
+      await auditStorage(this);await initializeStorageStats(this);
+    })();
+    try{await this.initializing;}finally{this.initializing=null;}
+  }
   activeDataset() {
     const row = this.db.prepare('SELECT value FROM plugin_meta WHERE key=?').get(ACTIVE_DATASET_KEY);
     return datasetId(row ? JSON.parse(row.value) : undefined);
@@ -208,6 +218,7 @@ export class SqliteRepository {
     if (this.cancel && Atomics.load(this.cancel, 0)) throw failure('cancelled', '请求已取消，事务未提交。', 409);
   }
   async execute(operation, args, cancel) {
+    if(this.upgradePending||this.maintenancePending)await this.initialize();
     if (!STORAGE_OPERATIONS.includes(operation) || !Array.isArray(args)) throw failure('invalid-request', '不支持的箱装操作。', 400);
     this.cancel = cancel;
     this.bulkCatalog = ['getBackupCatalog','deleteBackupBatch'].includes(operation);
