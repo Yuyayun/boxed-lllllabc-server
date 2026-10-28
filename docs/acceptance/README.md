@@ -1,4 +1,14 @@
-# 1.0.0 验收记录入口
+# 箱装辣白菜服务器插件验收记录
+
+## 当前 1.0.1 开发版
+
+- [本机验收结果与边界](1.0.1-desktop-acceptance.md)
+- [Termux 使用者实机清单](1.0.1-termux-checklist.md)，尚待设备反馈
+- [分阶段改造记录](1.0.1-migration-worklog.md)
+
+前后端均为 `1.0.1-dev.1`，分别推送各自的 `gpt/1.0.1-migration` 分支，不合并 main、不创建正式 Release。下面的 1.0.0 固定链接保留历史状态。
+
+## 1.0.0 历史验收入口
 
 正式发布核对：[1.0.0 发布检查](https://github.com/Yuyayun/boxed-lllllabc/blob/v1.0.0/docs/acceptance/release-1.0.0.md)。以下固定链接保留各阶段当时状态，旧版本号或未发布不代表当前发行状态。
 

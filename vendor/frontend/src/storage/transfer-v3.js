@@ -183,7 +183,7 @@ export function createTransferCoordinator({ control, adapters, locks = globalThi
       journal = result.journal; await event("activated", journal);
       return await wrapUp(journal);
     } catch (cause) {
-      if(!cause.simulateCrash)await notify(cause.code==='paused'?'paused':'error',journal,cause.code==='paused'?{}:{errorCode:typeof cause.code==='string'&&/^[a-zA-Z0-9_-]{1,64}$/.test(cause.code)?cause.code:'unexpected'});
+      if(!cause.simulateCrash)await notify(cause.code==='paused'?'paused':'error',journal,cause.code==='paused'?{}:{errorCode:typeof cause.code==='string'&&/^[a-zA-Z0-9_-]{1,64}$/.test(cause.code)?cause.code:['QuotaExceededError','AbortError','TimeoutError'].includes(cause.name)?cause.name:'unexpected'});
       if (cause.simulateCrash || ["paused", "recovery-required"].includes(cause.code)) throw cause;
       const current = (await control.read()).journal;
       if (current && current.phase !== "activated" && ["source-changed", "target-changed", "source-baseline-incomplete", "context-changed", "transfer-conflict", "snapshot-conflict"].includes(cause.code)) {

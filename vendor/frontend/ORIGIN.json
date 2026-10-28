@@ -28,5 +28,5 @@
     "src/storage/control.js",
     "src/storage/legacy-recovery.js"
   ],
-  "worktreeModified": false
+  "worktreeModified": true
 }
