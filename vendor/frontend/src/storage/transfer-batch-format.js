@@ -3,7 +3,7 @@ import { sha256, stableText } from "./value-digest.js";
 
 export const BATCH_RECORD_LIMIT = 100;
 export const INITIAL_CURSOR = Object.freeze({ store: 0, after: null });
-const fail = message => { throw new Error(message); };
+const fail = message => { throw Object.assign(new Error(message), { code: "transfer-conflict" }); };
 
 export function pageBudget(options = {}) {
   const limit = options.limit ?? BATCH_RECORD_LIMIT;
@@ -36,7 +36,9 @@ export async function batchPacket(id, index, inputRows) {
   const rows = structuredClone(inputRows);
   let bytes = 0, previous = rows[0].n - 1, store = -1;
   for (const row of rows) {
-    const inspected = inspectTransferRow(row); bytes += inspected.bytes;
+    let inspected;
+    try { inspected = inspectTransferRow(row); } catch (cause) { fail(cause.message); }
+    bytes += inspected.bytes;
     if (row.n !== previous + 1 || DATA_STORES.indexOf(row.store) < store) fail("批次序号或仓库顺序不连续。");
     const digest = await sha256(inspected.text);
     if (row.digest && digest !== row.digest) fail("迁移批次内容摘要不一致。");

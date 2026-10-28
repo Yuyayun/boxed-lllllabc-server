@@ -1,8 +1,7 @@
 import { authorize, databasePath } from './host.js';
 import { SqliteWorker } from './worker-client.js';
 import { failure, safeError } from './errors.js';
-import { STORAGE_PROTOCOL, STORAGE_OPERATIONS, encodeStorageValue, decodeStorageValue } from '../vendor/frontend/src/storage/protocol.js';
-import { TRANSFER_ACTIONS } from './transfer.js';
+import { STORAGE_PROTOCOL, STORAGE_OPERATIONS, validateBatchCall, encodeStorageValue, decodeStorageValue } from '../vendor/frontend/src/storage/protocol.js';
 
 export function installRoutes(router, { host, hostError, createWorker = (file) => new SqliteWorker(file) }) {
   let worker;
@@ -53,13 +52,26 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
   router.post('/transfer', route(async (request, owner, signal) => {
     const body = request.body;
     if (body?.protocol !== STORAGE_PROTOCOL) throw failure('protocol-incompatible', '切换协议不兼容，请升级对应插件。', 409);
-    if (Object.keys(body).some((key) => !['protocol','action','args'].includes(key)) || !TRANSFER_ACTIONS.includes(body.action)) throw failure('invalid-request', '切换请求无效，不接受路径或 SQL。', 400);
+    if (Object.keys(body).some((key) => !['protocol','action','args'].includes(key)) || !['status','rollback','finish'].includes(body.action)) throw failure('invalid-request', '旧迁移接口仅用于既有任务的恢复与收尾，请使用新版分批迁移。', 400);
     if (Buffer.byteLength(JSON.stringify(body)) > 16 * 1024 * 1024) throw failure('too-large', '切换批次超过 16 MiB。', 413);
     let args;
     try { args = decodeStorageValue(body.args); } catch { throw failure('invalid-request', '切换数据无法无损解码。', 400); }
     if (!args || Array.isArray(args) || typeof args !== 'object' || Object.keys(args).some((key) => !['id','after','rows','manifest'].includes(key))) throw failure('invalid-request', '切换参数无效。', 400);
     const result = await getWorker().call('_transfer', [body.action,args], owner, { signal, authorize: () => authorize(host,request) });
     return { value: encodeStorageValue(result) };
+  }));
+  router.post('/batch-transfer', route(async (request, owner, signal) => {
+    const body = request.body;
+    if (body?.protocol !== STORAGE_PROTOCOL) throw failure('protocol-incompatible', '分批迁移协议不兼容，请更新配套前后端。', 409);
+    if (!body || Object.keys(body).some(key => !['protocol','action','args'].includes(key))) throw failure('invalid-request', '分批迁移只接受已定义的方法和参数。', 400);
+    if (Buffer.byteLength(JSON.stringify(body)) > 16 * 1024 * 1024) throw failure('too-large', '迁移请求超过 16 MiB。', 413);
+    let args;
+    try { args = decodeStorageValue(body.args); validateBatchCall(body.action, args, 'sqlite'); }
+    catch { throw failure('invalid-request', '分批迁移方法、方向或参数无效。', 400); }
+    const result = await getWorker().call('_batchTransfer', [body.action, args], owner, { signal, authorize: () => authorize(host, request) });
+    const value = encodeStorageValue(result);
+    if (Buffer.byteLength(JSON.stringify(value)) > 32 * 1024 * 1024) throw failure('too-large', '迁移响应超过读取上限。', 413);
+    return { value };
   }));
   return { close: async () => { if (worker) await worker.close(); } };
 }

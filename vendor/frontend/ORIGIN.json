@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/Yuyayun/boxed-lllllabc",
-  "revision": "66e1e0158ea233bbac3e6200956eb5546685c78a",
+  "revision": "ad4fa931930c0d1a3efe1cf3ff5a8d059d7db24f",
   "note": "Exact source copies; maintain these transaction/protection modules together with the frontend. Preserve vendor/frontend/LICENSE.",
   "files": [
     "src/storage/operations.js",
@@ -21,7 +21,11 @@
     "src/storage/health.js",
     "src/storage/dataset-layout.js",
     "src/storage/batch-transfer.js",
-    "src/storage/transfer-batch-format.js"
+    "src/storage/transfer-batch-format.js",
+    "src/storage/transfer-v3.js",
+    "src/storage/legacy-transfer.js",
+    "src/storage/managed.js",
+    "src/storage/control.js"
   ],
-  "worktreeModified": true
+  "worktreeModified": false
 }

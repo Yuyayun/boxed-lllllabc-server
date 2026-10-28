@@ -1,5 +1,6 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { SqliteRepository } from './sqlite.js';
+import { validateBatchCall } from '../vendor/frontend/src/storage/protocol.js';
 
 let repository;
 try { repository = new SqliteRepository(workerData.file); parentPort.postMessage({ ready: true }); }
@@ -15,7 +16,12 @@ parentPort.on('message', (job) => {
       if (job.operation === '_close') { repository.close(); value = true; }
       else {
         repository.owner(job.owner);
-        if (job.operation === '_transfer') {
+        if (job.operation === '_batchTransfer') {
+          const [action, args] = job.args;
+          validateBatchCall(action, args, 'sqlite'); repository.cancel = cancel;
+          try { value = await repository.batchTransfer[action](...args); }
+          finally { repository.cancel = null; }
+        } else if (job.operation === '_transfer') {
           repository.cancel = cancel;
           try { value = await repository.transfer(...job.args); }
           finally { repository.cancel = null; }

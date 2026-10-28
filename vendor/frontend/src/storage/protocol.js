@@ -1,4 +1,26 @@
-export const STORAGE_PROTOCOL = 5;
+export const STORAGE_PROTOCOL = 6;
+export const BATCH_TRANSFER_VERSION = 3;
+export const BATCH_TRANSFER_METHODS = Object.freeze({
+  begin: [1, 1], status: [1, 1], inspect: [1, 1], prepareStep: [1, 2], sourceNext: [1, 3], append: [2, 2],
+  verifyBatch: [2, 2], startSeal: [2, 3], sealStep: [1, 2], startSourceCheck: [1, 1],
+  sourceCheckStep: [1, 2], commit: [2, 2], activate: [1, 1], beginAbort: [1, 1], finishStep: [1, 2], release: [1, 1],
+});
+export function validateBatchCall(action, args, mode) {
+  const bounds = Object.hasOwn(BATCH_TRANSFER_METHODS, action) && BATCH_TRANSFER_METHODS[action];
+  if (!bounds || !Array.isArray(args) || args.length < bounds[0] || args.length > bounds[1]) throw new Error("分批迁移方法或参数数量无效。");
+  const id = action === "begin" ? args[0]?.id : args[0];
+  if (typeof id !== "string" || !/^[a-zA-Z0-9_-]{8,80}$/.test(id)) throw new Error("分批迁移任务标识无效。");
+  if (action === "begin") {
+    const job = args[0];
+    if (!job || Array.isArray(job) || Object.keys(job).some(key => !["id", "role", "from", "to", "kind"].includes(key))
+        || !["source", "target"].includes(job.role) || mode && (job.role === "source" ? job.from : job.to) !== mode) throw new Error("分批迁移方向与当前存储端不符。");
+  }
+  const optionIndex = ["prepareStep", "sealStep", "sourceCheckStep", "finishStep"].includes(action) ? 1 : action === "sourceNext" ? 2 : -1;
+  const options = args[optionIndex];
+  if (optionIndex >= 0 && options !== undefined && (!options || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some(key => !["limit", "bytes"].includes(key)))) throw new Error("分批迁移分页参数无效。");
+  if (action === "startSeal" && args[2] !== undefined && typeof args[2] !== "boolean") throw new Error("验收重启参数无效。");
+  return args;
+}
 export const STORAGE_OPERATIONS = Object.freeze([
   "getChatMeta", "putChatMeta", "updateChatMetaSummary", "getRecentMessages",
   "replaceRecentSnapshot", "getFullMessages", "putFullMessages", "replaceFullSnapshot",

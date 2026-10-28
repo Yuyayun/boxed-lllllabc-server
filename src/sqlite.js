@@ -82,7 +82,7 @@ export class SqliteRepository {
     let availableBytes = null;
     try { const space = fs.statfsSync(this.file); availableBytes = space.bavail * space.bsize; }
     catch { /* Some hosts cannot report filesystem capacity; write failures still abort. */ }
-    return { readable: true, writable: true, schema: 4, bytes, counts, transfer: 2, snapshots: 1, availableBytes };
+    return { readable: true, writable: true, schema: 4, bytes, counts, transfer: 2, batchTransfer: 3, recovery: 1, snapshots: 1, availableBytes };
   }
   activeDataset() {
     const row = this.db.prepare('SELECT value FROM plugin_meta WHERE key=?').get(ACTIVE_DATASET_KEY);

@@ -45,7 +45,14 @@ export class SqliteWorker {
     if (signal?.aborted) abort();
     signal?.addEventListener('abort', abort, { once: true });
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => this.fail(failure('outcome-unknown', 'SQLite 操作超时；没有报告成功，请重新读取确认结果。')), this.timeoutMs);
+      const timer = setTimeout(() => {
+        const error = failure('outcome-unknown', 'SQLite 操作超时；没有报告成功，请重新读取确认结果。');
+        if (operation === '_batchTransfer') {
+          // Keep the entry queued until the worker acknowledges it. A timed-out
+          // batch must not kill unrelated jobs or become an unbounded retry queue.
+          abort(); reject(error);
+        } else this.fail(error);
+      }, this.timeoutMs);
       this.pending.set(id, { resolve, reject, timer, cleanup: () => signal?.removeEventListener('abort', abort) });
       this.ready.then(async () => {
         if (!this.pending.has(id)) return;

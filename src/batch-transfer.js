@@ -32,8 +32,12 @@ export function createSqliteBatchTransfer(repository) {
               if (tables.some(({name}) => !['records', 'records_next', 'plugin_meta', 'transfer_rows'].includes(name))) throw new Error('发现未知数据库表，未修改原数据。');
             },
             metaGet: get, metaPut: put,
+            metaDelete: key => statement('DELETE FROM plugin_meta WHERE key=?').run(key),
+            metaKeys: (prefix, after = '', limit = 100) => statement('SELECT key FROM plugin_meta WHERE key>=? AND key<? AND key>? ORDER BY key LIMIT ?').all(prefix, prefix+'\uffff', after, limit).map(row=>row.key),
             active: () => get(ACTIVE_DATASET_KEY), revision: () => get('revision') ?? 0,
+            activePut: value => put(ACTIVE_DATASET_KEY, value), revisionPut: value => put('revision', value),
             lockGet: () => get('transfer-lock'), lockPut: id => put('transfer-lock', id),
+            lockDelete: () => statement("DELETE FROM plugin_meta WHERE key='transfer-lock'").run(),
             taskGet: id => get('transfer:' + id), taskPut: state => put('transfer:' + state.id, state),
             get(dataset, name, key) {
               const row = statement(`SELECT payload FROM ${table(dataset)} WHERE store=? AND primary_key=?`).get(name, JSON.stringify(key));
