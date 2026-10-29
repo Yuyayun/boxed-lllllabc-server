@@ -7,11 +7,11 @@ import assert from 'node:assert/strict';
 import {installRoutes} from '../src/router.js';
 import {STORAGE_PROTOCOL,encodeStorageValue,decodeStorageValue} from '../vendor/frontend/src/storage/protocol.js';
 
-export async function routeFixture(t,{fault=false}={}){
+export async function routeFixture(t,{fault=false,createWorker}={}){
   const temporary=await fs.realpath(os.tmpdir()),root=await fs.mkdtemp(path.join(temporary,'boxed-route-log-')),storage=path.join(root,'storage');await fs.mkdir(storage);
   const faultPath=path.join(storage,'boxed-lllllabc-log-state.json');if(fault)await fs.mkdir(faultPath);
   const handlers=new Map(),nonce=randomUUID(),host={root:path.join(root,'host'),dataRoot:path.join(root,'data'),defaultHandle:'default-user',users:async()=>[],csrfEnabled:()=>true,config:(key,fallback)=>key==='boxedLllllabc.databaseDirectory'?storage:fallback};
-  const routes=installRoutes({get:(key,handler)=>handlers.set('GET '+key,handler),post:(key,handler)=>handlers.set('POST '+key,handler)},{host});
+  const routes=installRoutes({get:(key,handler)=>handlers.set('GET '+key,handler),post:(key,handler)=>handlers.set('POST '+key,handler)},{host,...(createWorker?{createWorker}:{})});
   const server=http.createServer(async(req,res)=>{
     try{
       if(req.headers['x-boxed-test']!==nonce){res.writeHead(403).end();return;}

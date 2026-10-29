@@ -24,6 +24,19 @@ for(const code of ['EACCES','ENOSPC'])test(`日志实际写入步骤发生 ${cod
   let status;for(let i=0;i<30;i++){status=await f.call('/status');if(status.logHealth.available===false)break;await delay(10);}assert.equal(status.ok,true);assert.equal(status.logHealth.available,false);assert.equal((await f.operation('getChatMeta',['io-fault-'+code])).value.keep,true);
   failing=false;const result=await f.call('/logs/event',{protocol:STORAGE_PROTOCOL,taskId:'after-io-fault',from:'indexeddb',to:'sqlite',kind:'switch',stage:'completed'});assert.equal(result.ok,true);assert.equal(result.logHealth.available,true);
 });
+test('前端已记录进度时后端不重复记录；失联回退仍五秒限频，关键结果不丢',async t=>{
+  let now=1000000;const actualNow=Date.now;Date.now=()=>now;t.after(()=>{Date.now=actualNow;});
+  const worker={call:async()=>({writable:true,batchTransfer:3}),close:async()=>{}};
+  const f=await routeFixture(t,{createWorker:()=>worker}),event={taskId:'shared-progress-task',from:'indexeddb',to:'sqlite',kind:'switch'};
+  await f.call('/logs/event',{protocol:STORAGE_PROTOCOL,...event,stage:'registered'});const status=await f.call('/status');assert.equal(status.pluginVersion,'1.0.1');
+  const send=()=>worker.observe({...event,stage:'progress',operation:'verifyBatch',count:1});
+  now+=4000;send();assert.equal((await f.call('/logs?category=all')).value.entries.filter(row=>row.stage==='progress').length,0);
+  now+=7000;send();now+=1000;send();now+=4000;send();
+  let rows=(await f.call('/logs?category=all')).value.entries;assert.equal(rows.filter(row=>row.stage==='progress').length,2);
+  await f.call('/logs/event',{protocol:STORAGE_PROTOCOL,...event,stage:'committing'});worker.observe({...event,stage:'finished',operation:'commit'});
+  await f.call('/logs/event',{protocol:STORAGE_PROTOCOL,...event,stage:'completed'});rows=(await f.call('/logs?category=all')).value.entries;
+  assert.ok(rows.some(row=>row.operation==='commit'));assert.ok(rows.some(row=>row.stage==='completed'));
+});
 
 test('清空任务与日常保存错误的浏览器记录和终端说明一致，不把清空写成搬家',async t=>{
   const lines=[],print=console.log;console.log=(...args)=>lines.push(args.join(' '));t.after(()=>{console.log=print;});const f=await routeFixture(t);

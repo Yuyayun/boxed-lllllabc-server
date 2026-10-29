@@ -13,9 +13,14 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
   const capabilities={batchTransfer:3,recovery:1,supervision:1,logs:1};
   const getLogger=()=>logger??=new RuntimeLog(path.dirname(databasePath(host)));
   let logHealth={available:true},lastTerminalProgress=0;
+  const frontendLogActivity=new Map();
   const logFailed=()=>{if(logHealth.available)console.warn('[箱装辣白菜] 运行日志暂时无法写入；备份结果仍以任务登记为准。请检查服务器备份目录。');logHealth={available:false};};
-  const recordLog=async event=>{
+  const recordLog=async (event,fromFrontend=false)=>{
     try{const result=await getLogger().record(event);logHealth={available:true};
+      if(fromFrontend&&event.taskId){
+        if(['completed','cancelled'].includes(event.stage))frontendLogActivity.delete(event.taskId);
+        else{if(frontendLogActivity.size>=32)frontendLogActivity.delete(frontendLogActivity.keys().next().value);frontendLogActivity.set(event.taskId,Date.now());}
+      }
       if(result&&(result.category==='error'||['registered','completed','cancelled','paused','recover'].includes(result.stage)||Date.now()-lastTerminalProgress>=5000)){
         console.log('[箱装辣白菜]',formatRuntimeLog(result));lastTerminalProgress=Date.now();
       }return result;
@@ -30,7 +35,13 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
           if(!event.taskId&&!event.errorCode){if(event.stage!=='finished'||Date.now()-lastDaily<60000)return;lastDaily=Date.now();}
           if(['inspect','status'].includes(event.operation)&&!event.errorCode)return;
           if(event.taskId&&!event.errorCode){
-            if(event.stage==='progress'){if(Date.now()-lastTaskProgress<1000)return;lastTaskProgress=Date.now();}
+            if(event.stage==='progress'){
+              // The frontend already records this task's aggregate progress.
+              // Retain server-side fallback when it has been silent for two
+              // logging intervals; heartbeat/UI supervision is unchanged.
+              if(Date.now()-(frontendLogActivity.get(event.taskId)??-Infinity)<10000)return;
+              if(Date.now()-lastTaskProgress<5000)return;lastTaskProgress=Date.now();
+            }
             else if(event.stage==='started'?!['begin','commit','activate','beginAbort'].includes(event.operation):!['begin','commit','activate','beginAbort','release'].includes(event.operation))return;
           }
           void writeLog(event);
@@ -82,7 +93,7 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
     const {protocol,...event}=request.body??{};
     if(protocol!==STORAGE_PROTOCOL||Buffer.byteLength(JSON.stringify(request.body))>4096)throw failure('invalid-request','日志事件参数无效。',400);
     try{validateLogEvent(event);}catch{throw failure('invalid-request','日志事件参数无效，不接受正文或自定义文本。',400);}
-    await recordLog(event);return {value:true};
+    await recordLog(event,true);return {value:true};
   }));
   router.post('/logs/cleanup',route(async request=>{
     const body=request.body;
@@ -92,7 +103,7 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
   let cleanupCursor=0;
   maintenance=setInterval(()=>{if(logger)void logger.cleanup({cursor:cleanupCursor,maxFiles:2}).then(result=>{cleanupCursor=result.cursor??0;}).catch(logFailed);},60000);maintenance.unref();
   router.get('/status', route(async (request, owner, signal) => ({
-    pluginVersion: '1.0.1-dev.1', state: 'connected',
+    pluginVersion: '1.0.1', state: 'connected',
     database: await getWorker().call('_status', [], owner, { signal, authorize: () => authorize(host, request) }),
   })));
   router.post('/operation', route(async (request, owner, signal) => {

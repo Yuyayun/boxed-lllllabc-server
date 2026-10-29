@@ -18,7 +18,7 @@ function readMeter(repo){
   }});};
   return {rows,async run(name,fn){action=name;try{return await fn();}finally{action='outside';}}};
 }
-function fixture(t,{from='indexeddb',hook=async()=>{},oldCommit=false,lostReply=false}={}) {
+function fixture(t,{from='indexeddb',hook=async()=>{},progress=()=>{},oldCommit=false,lostReply=false}={}) {
   const root=fs.realpathSync(os.tmpdir()),dir=fs.mkdtempSync(path.join(root,'boxed-read-budget-'));
   const source=new SqliteRepository(path.join(dir,'source.sqlite')),target=new SqliteRepository(path.join(dir,'target.sqlite'));
   const meters={source:readMeter(source),target:readMeter(target)};
@@ -35,7 +35,7 @@ function fixture(t,{from='indexeddb',hook=async()=>{},oldCommit=false,lostReply=
     return value;
   }});
   const adapters={[from]:port(source,'source'),[to]:port(target,'target')};
-  const coordinator=()=>createTransferCoordinator({control,adapters,locks:{request:async(_n,_o,fn)=>fn()},hook:stage=>hook(stage,{source,target,state}),budget:{limit:2,bytes:4096}});
+  const coordinator=()=>createTransferCoordinator({control,adapters,locks:{request:async(_n,_o,fn)=>fn()},progress,hook:stage=>hook(stage,{source,target,state}),budget:{limit:2,bytes:4096}});
   return {source,target,from,to,calls,control,coordinator,adapters,meters};
 }
 async function seed(f){for(let n=0;n<7;n++)await f.source.execute('putChatMeta',[{chatKey:'source-'+n,body:'synthetic-'+n}]);await f.target.execute('putChatMeta',[{chatKey:'old-target',keep:true}]);}
@@ -87,4 +87,12 @@ for(const when of ['initial','midway','status-error'])test(`容量检查 ${when}
   f.adapters[f.to].checkCapacity=async()=>{calls++;if(when==='initial'||when==='status-error'||calls===3)throw new Error(when==='status-error'?'status unavailable':'space insufficient');};
   await assert.rejects(f.coordinator().switchTo(f.to,{confirmed:true}));assert.equal((await f.control.read()).active,f.from);assert.ok((await f.control.read()).journal);assert.deepEqual(rows(f.source),source);assert.deepEqual(rows(f.target),target);
   assert.equal((await f.coordinator().abandon({confirmed:true})).cancelled,true);assert.deepEqual(rows(f.source),source);assert.deepEqual(rows(f.target),target);
+});
+test('普通搬运日志每五秒限频，阶段切换及时记录，界面进度仍逐步更新',async t=>{
+  let now=1000000,messages=0;const actualNow=Date.now,events=[];Date.now=()=>now;t.after(()=>{Date.now=actualNow;});
+  const f=fixture(t,{progress:()=>messages++,hook:async()=>{now+=1000;}});await seed(f);f.adapters.sqlite.logEvent=async event=>events.push({at:now,...event});
+  assert.equal((await f.coordinator().switchTo(f.to,{confirmed:true})).ok,true);
+  const copies=events.filter(event=>['append','batch-verified'].includes(event.stage));assert.ok(copies.length>=2);for(let n=1;n<copies.length;n++)assert.ok(copies[n].at-copies[n-1].at>=5000);
+  for(const stage of ['registered','inventory','prepared','append','target-check','verified','source-check','committing','committed','activated','completed'])assert.ok(events.some(event=>event.stage===stage),stage);
+  assert.equal(f.calls.target.verifyBatch,4);assert.ok(messages>copies.length);
 });

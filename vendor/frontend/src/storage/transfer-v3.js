@@ -9,6 +9,7 @@ const terminal = state => state && ["finished", "rolled-back"].includes(state.ph
 export function createTransferCoordinator({ control, adapters, locks = globalThis.navigator?.locks, pause = async () => {}, resume = async () => {}, validate = async () => {}, progress = () => {}, hook = async () => {}, budget } = {}) {
   let busy = false, pauseRequested = false;
   let lastLogProgress = -Infinity, logUnavailable = false;
+  let lastLogPhase;
   const progressStages = new Set(['inventory','source-check','prepare','append','batch-verified','resume-batch','target-check','commit-check','finish-target','finish-source']);
   const legacy = createLegacyTransferCoordinator({ control, adapters, locks, pause, resume, validate, progress, hook });
   const call = (mode, action, args) => {
@@ -18,10 +19,14 @@ export function createTransferCoordinator({ control, adapters, locks = globalThi
   const boundary = () => { if (pauseRequested) throw error("存储操作已暂停，恢复时会核对已登记进度；备份操作保持锁定。", "paused"); };
   async function notify(stage,journal,metrics={}) {
     if(!adapters.sqlite?.logEvent || logUnavailable)return;
+    const phase=stage==='append'||stage==='batch-verified'?'copy':stage;
     if(progressStages.has(stage)) {
-      if(Date.now()-lastLogProgress<1000)return;
+      // Entering a phase is important; repeated updates within it are ordinary
+      // progress. Writing and verifying a batch belong to the same copy phase.
+      if(phase===lastLogPhase&&Date.now()-lastLogProgress<5000)return;
       lastLogProgress=Date.now();
     }
+    lastLogPhase=phase;
     try{await adapters.sqlite.logEvent({taskId:journal.id,from:journal.from,to:journal.to,kind:journal.kind,stage,...metrics});}
     catch{logUnavailable=true;/* The adapter exposes log failure separately; recovery uses the database journal. */}
   }

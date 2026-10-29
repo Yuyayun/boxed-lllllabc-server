@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/Yuyayun/boxed-lllllabc",
-  "revision": "00e4059c58abd6ad07aa9beb5c132b4fc21ca058",
+  "revision": "a5a891d61f12d02f53395005dcf8f18e15e87c48",
   "note": "Exact source copies; maintain these transaction/protection modules together with the frontend. Preserve vendor/frontend/LICENSE.",
   "files": [
     "src/storage/operations.js",
