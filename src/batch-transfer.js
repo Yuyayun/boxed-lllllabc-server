@@ -73,7 +73,7 @@ export function createSqliteBatchTransfer(repository) {
           };
           const result = await callback(port);
           repository.checkCancelled(); db.exec('COMMIT');
-          repository.reportProgress?.({count:result?.checkSummary?.count??result?.summary?.count,verified:result?.verified,batch:result?.verifiedBatch});return result;
+          repository.reportProgress?.({count:result?.cleanupPhase?result.cleaned:result?.checkSummary?.count??result?.summary?.count,verified:result?.kind==='clear'?undefined:result?.verified,batch:result?.verifiedBatch});return result;
         } catch (error) { repository.rollback(error); }
       });
       tail = run.catch(() => {});

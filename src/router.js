@@ -3,6 +3,7 @@ import { SqliteWorker } from './worker-client.js';
 import { failure, safeError } from './errors.js';
 import { STORAGE_PROTOCOL, STORAGE_OPERATIONS, validateBatchCall, encodeStorageValue, decodeStorageValue } from '../vendor/frontend/src/storage/protocol.js';
 import { RuntimeLog, validateLogEvent } from './runtime-log.js';
+import {formatRuntimeLog} from '../vendor/frontend/src/storage/runtime-log-format.js';
 import path from 'node:path';
 
 export function installRoutes(router, { host, hostError, createWorker = (file) => new SqliteWorker(file) }) {
@@ -11,7 +12,16 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
   let logger,maintenance;
   const capabilities={batchTransfer:3,recovery:1,supervision:1,logs:1};
   const getLogger=()=>logger??=new RuntimeLog(path.dirname(databasePath(host)));
-  const writeLog=event=>{try{return getLogger().record(event).catch(()=>{});}catch{return Promise.resolve();}};
+  let logHealth={available:true},lastTerminalProgress=0;
+  const logFailed=()=>{if(logHealth.available)console.warn('[箱装辣白菜] 运行日志暂时无法写入；备份结果仍以任务登记为准。请检查服务器备份目录。');logHealth={available:false};};
+  const recordLog=async event=>{
+    try{const result=await getLogger().record(event);logHealth={available:true};
+      if(result&&(result.category==='error'||['registered','completed','cancelled','paused','recover'].includes(result.stage)||Date.now()-lastTerminalProgress>=5000)){
+        console.log('[箱装辣白菜]',formatRuntimeLog(result));lastTerminalProgress=Date.now();
+      }return result;
+    }catch(error){logFailed();throw error;}
+  };
+  const writeLog=event=>recordLog(event).catch(()=>null);
   const getWorker = () => {
     if (workerError) throw workerError;
     try {
@@ -21,7 +31,7 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
           if(['inspect','status'].includes(event.operation)&&!event.errorCode)return;
           if(event.taskId&&!event.errorCode){
             if(event.stage==='progress'){if(Date.now()-lastTaskProgress<1000)return;lastTaskProgress=Date.now();}
-            else if(event.stage==='started'?!['begin','commit','activate','beginAbort'].includes(event.operation):!['begin','verifyBatch','commit','activate','beginAbort','release'].includes(event.operation))return;
+            else if(event.stage==='started'?!['begin','commit','activate','beginAbort'].includes(event.operation):!['begin','commit','activate','beginAbort','release'].includes(event.operation))return;
           }
           void writeLog(event);
         };
@@ -34,7 +44,7 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
     response.set('Cache-Control', 'no-store');
     let streaming=false,timer;
     const send=value=>{
-      const data={protocol:STORAGE_PROTOCOL,capabilities,...value};
+      const data={protocol:STORAGE_PROTOCOL,capabilities,logHealth,...value};
       if(streaming){if(!response.destroyed){response.write(JSON.stringify({type:'result',...data})+'\n');response.end();}}
       else if(!response.destroyed)response.json(data);
     };
@@ -72,7 +82,7 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
     const {protocol,...event}=request.body??{};
     if(protocol!==STORAGE_PROTOCOL||Buffer.byteLength(JSON.stringify(request.body))>4096)throw failure('invalid-request','日志事件参数无效。',400);
     try{validateLogEvent(event);}catch{throw failure('invalid-request','日志事件参数无效，不接受正文或自定义文本。',400);}
-    await getLogger().record(event);return {value:true};
+    await recordLog(event);return {value:true};
   }));
   router.post('/logs/cleanup',route(async request=>{
     const body=request.body;
@@ -80,7 +90,7 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
     return {value:await getLogger().cleanup({manual:true,cursor:body.cursor??0,maxFiles:4})};
   }));
   let cleanupCursor=0;
-  maintenance=setInterval(()=>{if(logger)void logger.cleanup({cursor:cleanupCursor,maxFiles:2}).then(result=>{cleanupCursor=result.cursor??0;}).catch(()=>{});},60000);maintenance.unref();
+  maintenance=setInterval(()=>{if(logger)void logger.cleanup({cursor:cleanupCursor,maxFiles:2}).then(result=>{cleanupCursor=result.cursor??0;}).catch(logFailed);},60000);maintenance.unref();
   router.get('/status', route(async (request, owner, signal) => ({
     pluginVersion: '1.0.1-dev.1', state: 'connected',
     database: await getWorker().call('_status', [], owner, { signal, authorize: () => authorize(host, request) }),

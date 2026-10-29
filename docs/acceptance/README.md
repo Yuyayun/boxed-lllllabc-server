@@ -2,6 +2,7 @@
 
 ## 当前 1.0.1 开发版
 
+- [本轮问题整改与效率对照](1.0.1-remediation-report.md)：01、05–11 修复与测试，02、03、04、12 的实测及后续方案。
 - [本机验收结果与边界](1.0.1-desktop-acceptance.md)
 - [Termux 使用者实机清单](1.0.1-termux-checklist.md)，尚待设备反馈
 - [分阶段改造记录](1.0.1-migration-worklog.md)

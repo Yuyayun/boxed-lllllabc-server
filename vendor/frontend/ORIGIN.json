@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/Yuyayun/boxed-lllllabc",
-  "revision": "9d45089526d5954451c3bce527249408a5864ae7",
+  "revision": "00e4059c58abd6ad07aa9beb5c132b4fc21ca058",
   "note": "Exact source copies; maintain these transaction/protection modules together with the frontend. Preserve vendor/frontend/LICENSE.",
   "files": [
     "src/storage/operations.js",
@@ -26,7 +26,8 @@
     "src/storage/legacy-transfer.js",
     "src/storage/managed.js",
     "src/storage/control.js",
-    "src/storage/legacy-recovery.js"
+    "src/storage/legacy-recovery.js",
+    "src/storage/runtime-log-format.js"
   ],
   "worktreeModified": false
 }

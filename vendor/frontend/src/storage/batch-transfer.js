@@ -281,10 +281,12 @@ export function createBatchTransfer({ driver, now = () => new Date().toISOString
     transferId(id);
     return driver.transaction("readwrite", async tx => {
       const state = await locked(tx, id, "target");
+      if (state.phase !== "committed" && !state.auditDone) fail("目标完整验收尚未结束，不能提交。");
       const next = commitDataset(state, { active: datasetId(await tx.active()), revision: await tx.revision(), expectedManifest: expected });
       if (state.phase !== "committed") {
         await tx.activePut(next.dataset); await tx.revisionPut(next.commitRevision);
-        next.auditDone = false;
+        // No payload is copied or changed here. The verified data and its
+        // persistent lock remain in place; keep the audit for this live commit.
       }
       await tx.taskPut(next); return next;
     });

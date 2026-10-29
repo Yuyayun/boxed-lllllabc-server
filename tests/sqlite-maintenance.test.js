@@ -34,3 +34,8 @@ test('旧库复制期间强制终止真实工作线程，重开后原内容完�
   const reopened=new SqliteWorker(f.file);try{const status=await reopened.call('_status',[],'default-user');assert.equal(status.counts.find(row=>row.store==='chat_meta').count,231);assert.deepEqual(source.prepare('SELECT * FROM records ORDER BY store,primary_key').all(),before);}finally{await reopened.close();}
 });
 test('启动解析错误不将载荷片段写入线程错误回执或日志事件',async t=>{const f=fixture(t),repo=f.open();await repo.execute('putChatMeta',[{chatKey:'keep'}]);repo.db.prepare("UPDATE records SET payload='PRIVATE_CHAT_BODY_INVALID_JSON'").run();repo.close();const worker=new SqliteWorker(f.file),events=[];worker.observe=event=>events.push(event);try{await assert.rejects(worker.call('_status',[],'default-user'),error=>{assert.doesNotMatch(error.message,/PRIVATE_CHAT_BODY/);return error.code==='database-unavailable';});assert.doesNotMatch(JSON.stringify(events),/PRIVATE_CHAT_BODY/);}finally{await worker.close();}});
+test('常规重启发现未知表时停止初始化，已存在备份原样保留',async t=>{
+  const f=fixture(t),repo=f.open();await repo.execute('putChatMeta',[{chatKey:'retained',keep:true}]);const before=repo.db.prepare('SELECT * FROM records').all();repo.db.exec('CREATE TABLE foreign_data(value TEXT)');repo.close();
+  await assert.rejects(async()=>{const reopened=f.open();await reopened.initialize();},/未知数据库表/);
+  const raw=f.track(new DatabaseSync(f.file,{readOnly:true}));assert.deepEqual(raw.prepare('SELECT * FROM records').all(),before);assert.equal(raw.prepare("SELECT count(*) AS n FROM sqlite_master WHERE name='foreign_data'").get().n,1);
+});
