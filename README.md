@@ -2,7 +2,7 @@
 
 为[箱装辣白菜前端扩展](https://github.com/Yuyayun/boxed-lllllabc)提供可选的服务器备份存储（SQLite）。前后端分仓库、分别安装。
 
-**当前版本：1.0.1。** 本分支已整理为正式版本号，尚未合并 main 或发布 Release。请与前端 `gpt/1.0.1-migration` 分支的 1.0.1 配套使用；main 目前仍为已发布的 1.0.0。
+**当前正式版本：1.0.1。** [正式发布与下载](https://github.com/Yuyayun/boxed-lllllabc-server/releases/tag/v1.0.1)。请与前端扩展 1.0.1 配套使用。
 
 只安装前端即可使用浏览器本地备份。安装本插件后，不会自动切换位置或迁移数据；需要使用服务器存储时，再到前端确认切换。
 
@@ -17,16 +17,16 @@
 
 ## 安装
 
-先停止测试酒馆。使用配套测试包时，解压后的目录应为：
+先停止酒馆。从正式发布页面下载源码 ZIP，解压后将目录命名为 `boxed-lllllabc-server`，放到：
 
 ```text
 plugins/boxed-lllllabc-server
 ```
 
-也可以在酒馆根目录使用 Git 安装当前测试分支：
+也可以在酒馆根目录使用 Git 安装正式版：
 
 ```sh
-git clone --branch gpt/1.0.1-migration https://github.com/Yuyayun/boxed-lllllabc-server.git plugins/boxed-lllllabc-server
+git clone --branch main https://github.com/Yuyayun/boxed-lllllabc-server.git plugins/boxed-lllllabc-server
 ```
 
 在酒馆 `config.yaml` 中开启：
