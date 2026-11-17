@@ -1,5 +1,6 @@
 import { verifySnapshotHeader, verifySnapshotMessage } from "./model.js";
 import { stableText } from "../storage/value-digest.js";
+import { backupBatches } from '../storage/backup-batches.js';
 
 export async function readSnapshot(session, id) {
   const header = await session.getSnapshotHeader(id);
@@ -22,13 +23,5 @@ export async function readSnapshot(session, id) {
 }
 
 export function snapshotBatches(messages) {
-  const batches = []; let batch = [], bytes = 0;
-  for (const row of messages) {
-    const size = new TextEncoder().encode(stableText(row)).byteLength;
-    if (size > 8 * 1024 * 1024) throw new Error("单条快照楼层超过 8 MiB，未报告创建成功。");
-    if (batch.length && (batch.length >= 50 || bytes + size > 2 * 1024 * 1024)) { batches.push(batch); batch = []; bytes = 0; }
-    batch.push(row); bytes += size;
-  }
-  if (batch.length) batches.push(batch);
-  return batches;
+  return backupBatches(messages);
 }

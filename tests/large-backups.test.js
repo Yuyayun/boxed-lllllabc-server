@@ -42,3 +42,19 @@ test('大聊天分页和目录不受整包读取行数限制', () => use(async r
   assert.equal(catalog.items[0].full.count, 25001);
   assert.equal(JSON.stringify(catalog).includes('"raw"'), false);
 }));
+test('超过 128 MiB 的单聊天可以读取摘要和所有正文页', () => use(async repo => {
+  await call(repo, 'putFullMessages', { chatKey: 'huge', messages: Array.from({ length: 129 }, (_, index) => row(index, 'x'.repeat(1024 * 1024))) });
+  await assert.rejects(call(repo, 'getFullMessages', 'huge'), { code: 'too-large' });
+  const summary = await call(repo, 'getBackupSummary', 'huge');
+  let count = 0, after = null;
+  do { const page = await call(repo, 'getBackupPage', { chatKey: 'huge', store: 'full_messages', after, revision: summary.revision }); count += page.rows.length; after = page.after; } while (after !== null);
+  assert.equal(count, 129); assert.equal((await call(repo, 'getBackupCatalogPage', {})).items[0].full.count, 129);
+}));
+test('新清理接口原子复核版本，保留冻结完整备份和 pending', () => use(async repo => {
+  await call(repo, 'putFullMessages', { chatKey: 'chat', messages: [row(0)], meta: { chatKey: 'chat', fullBackupState: 'frozen' } });
+  await call(repo, 'putPendingChanges', [{ chatKey: 'chat', id: 'chat:0', messageIndex: 0 }]);
+  const summary = await call(repo, 'getBackupSummary', 'chat');
+  await assert.rejects(call(repo, 'deleteBackupV2', { chatKey: 'chat', store: 'full_messages', revision: summary.revision }), /保护/);
+  await assert.rejects(call(repo, 'deleteBackupV2', { chatKey: 'chat', store: 'pending_changes', revision: summary.revision }), /未保存/);
+  assert.equal((await call(repo, 'getFullMessages', 'chat')).length, 1);
+}));

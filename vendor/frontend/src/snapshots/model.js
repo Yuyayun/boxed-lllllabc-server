@@ -47,6 +47,11 @@ export async function captureSnapshot(current, { name, id = crypto.randomUUID(),
   return { header, messages: chat.map((raw, messageIndex) => ({ snapshotId: id, messageIndex, raw, digest: hashes[messageIndex] })) };
 }
 export async function currentSnapshotFingerprint(current) {
-  return digestValue([current?.identity?.chatKey, current?.chat, current?.context?.chatMetadata ?? {}]);
+  const hashes = [];
+  for (const row of current?.chat ?? []) hashes.push(await digestValue(row));
+  return digestValue([current?.identity?.chatKey, hashes, await digestValue(current?.context?.chatMetadata ?? {})]);
 }
-export const sameSnapshotContent = (left, right) => stableText(left) === stableText(right);
+export function sameSnapshotContent(left, right) {
+  if (Array.isArray(left) || Array.isArray(right)) return Array.isArray(left) && Array.isArray(right) && left.length === right.length && left.every((row, index) => sameSnapshotContent(row, right[index]));
+  return stableText(left) === stableText(right);
+}

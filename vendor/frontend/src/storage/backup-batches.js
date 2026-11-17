@@ -14,7 +14,7 @@ export function* iterateBackupBatches(rows, mapRow = value => value) {
     const row = mapRow(input, index++);
     const size = measureBackupValue(row);
     // A single record still has to fit the existing wire/storage guards.
-    if (size.bytes > 8 * 1024 * 1024 - 4096 || size.nodes > 180000) throw backupFailure('单条备份超过安全上限，已有备份已保留。', 'backup-limit');
+    if (size.bytes > 8 * 1024 * 1024 - 4096 || size.nodes > 180000) throw backupFailure('单条备份超过 8 MiB 或结构安全上限，已有备份已保留。', 'backup-limit');
     if (batch.length && (batch.length >= BACKUP_BUDGET.rows || bytes + size.bytes > BACKUP_BUDGET.bytes || nodes + size.nodes > BACKUP_BUDGET.nodes)) {
       yield batch; batch = []; bytes = 1024; nodes = 100;
     }

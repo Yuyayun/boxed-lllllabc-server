@@ -1,6 +1,9 @@
 import { BACKUP_STORES, checkBackupBatch, backupFailure } from './backup-batches.js';
+import { createBatchCleanupPlan } from '../backup/batch-cleanup.js';
+import { buildCleanupMetaPatch } from '../backup/cleanup.js';
+import { summarizeBackupCatalog } from '../backup/catalog.js';
 
-export const LARGE_BACKUP_OPERATIONS = Object.freeze(['getBackupSummary', 'getBackupPage', 'getBackupCatalogPage', 'beginBackupWrite', 'appendBackupWrite', 'commitBackupWrite', 'abortBackupWrite', 'getBackupWriteStatus', 'deleteBackupV2', 'applyBackupPatch']);
+export const LARGE_BACKUP_OPERATIONS = Object.freeze(['getBackupSummary', 'getBackupPage', 'getBackupCatalogPage', 'beginBackupWrite', 'appendBackupWrite', 'commitBackupWrite', 'abortBackupWrite', 'getBackupWriteStatus', 'deleteBackupV2', 'applyBackupPatch', 'deleteBackupBatchV2']);
 const assert = (value, text) => { if (!value) throw backupFailure(text); };
 const validStore = store => assert(BACKUP_STORES.includes(store), '备份类型无效。');
 const jobKey = id => { assert(typeof id === 'string' && /^[a-zA-Z0-9_-]{8,80}$/.test(id), '备份任务标识无效。'); return 'backup-write:' + id; };
@@ -28,7 +31,7 @@ export function createLargeBackupOperations(driver) {
       const page = await tx.page(store, chatKey, after, hashesOnly);
       return { ...page, revision };
     }),
-    getBackupCatalogPage: (options = {}) => transaction('readonly', tx => tx.catalog(options.after ?? null)),
+    getBackupCatalogPage: (options = {}) => transaction('readonly', async tx => ({ ...await tx.catalog(options.after ?? null), revision: await tx.revision() })),
     beginBackupWrite: options => transaction('readwrite', async tx => {
       const { chatKey, store, count, revision, replace = true, meta } = options; validStore(store);
       assert(typeof chatKey === 'string' && chatKey && Number.isSafeInteger(count) && count >= 0, '备份暂存参数无效。');
@@ -76,7 +79,26 @@ export function createLargeBackupOperations(driver) {
       validStore(store); assert(store !== 'pending_changes', '未保存变更不能普通清理。'); await revisionMatches(tx, revision);
       const meta = await tx.get('chat_meta', chatKey);
       assert(store !== 'full_messages' || !['frozen','awaiting-confirmation'].includes(meta?.fullBackupState), '完整备份受到保护，不能清理。');
-      const counts = await tx.counts(chatKey); await tx.deleteChat(store, chatKey); await tx.bumpRevision(); return { deletedCount: counts[store], chatKey };
+      const counts = await tx.counts(chatKey); await tx.deleteChat(store, chatKey);
+      const type = { full_messages: 'full', recent_messages: 'recent', historical_changes: 'historical' }[store];
+      if (meta) await tx.put('chat_meta', { ...meta, ...buildCleanupMetaPatch(type) });
+      await tx.bumpRevision(); return { deletedCount: counts[store], chatKey };
+    }),
+    deleteBackupBatchV2: ({ selection, revision, mode, confirmed }) => transaction('readwrite', async tx => {
+      assert(confirmed === true && mode === driver.mode, '批量清理必须确认当前备份位置。'); await revisionMatches(tx, revision);
+      const chats = []; let after = null;
+      do { const page = await tx.catalog(after); chats.push(...page.items); after = page.after; } while (after !== null);
+      const catalog = summarizeBackupCatalog(chats, chats.filter(chat => chat.error).length);
+      const plan = createBatchCleanupPlan({ catalog, selection, mode }); assert(plan.canConfirm, plan.blockedReason);
+      const stores = { full: 'full_messages', recent: 'recent_messages', historical: 'historical_changes' };
+      for (const action of plan.actions) {
+        await tx.deleteChat(stores[action.type], action.chatKey);
+        const meta = await tx.get('chat_meta', action.chatKey);
+        if (meta) await tx.put('chat_meta', { ...meta, ...buildCleanupMetaPatch(action.type) });
+      }
+      await tx.bumpRevision();
+      return { ok: true, committed: true, succeeded: plan.actions.length, skipped: plan.skipped.length, failed: 0, deletedRecords: plan.recordCount,
+        items: [...plan.actions.slice(0, 50).map(item => ({ ...item, status: 'deleted' })), ...plan.skipped.slice(0, 50).map(item => ({ ...item, status: 'skipped', reason: item.blockedReason }))] };
     }),
   };
 }

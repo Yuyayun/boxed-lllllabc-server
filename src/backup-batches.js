@@ -8,6 +8,7 @@ const decode = value => decodeStorageValue(JSON.parse(value));
 export function createSqliteBackupBatches(repo) {
   const db = repo.db;
   const driver = {
+    mode: 'sqlite',
     async transaction(mode, callback) {
       repo.checkCancelled(); db.exec(mode === 'readwrite' ? 'BEGIN IMMEDIATE' : 'BEGIN');
       try {

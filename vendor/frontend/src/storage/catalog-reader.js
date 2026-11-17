@@ -30,5 +30,14 @@ export async function readCatalogByChat(stores, driver, requestToPromise) {
 }
 
 export async function readBackupCatalog(session, buildCatalog = buildBackupCatalog) {
+  if (session.capabilities?.boundedBackup) {
+    const chats = []; let after = null, revision;
+    do {
+      const page = await session.getBackupCatalogPage({ after });
+      if (revision !== undefined && revision !== page.revision) throw new Error('备份目录在读取期间发生变化，请刷新。');
+      revision = page.revision; chats.push(...page.items); after = page.after;
+    } while (after !== null);
+    return summarizeBackupCatalog(chats, chats.filter(chat => chat.error).length);
+  }
   return session.getBackupCatalog ? session.getBackupCatalog() : buildCatalog(await session.getBackupCatalogData());
 }
