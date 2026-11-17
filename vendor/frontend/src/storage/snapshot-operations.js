@@ -34,7 +34,12 @@ export function createSnapshotOperations({ runTransaction, requestToPromise: req
       return runTransaction(db, [STORES.snapshots, STORES.snapshotMessages], "readwrite", async stores => {
         const headers = stores.get(STORES.snapshots), header = await request(headers.get(id));
         if (!header || header.state !== "draft" || header.written !== header.messageCount) throw new Error("聊天快照未完整写入，不能报告创建成功。");
-        const keys = await request(stores.get(STORES.snapshotMessages).index("by_snapshot").getAllKeys(id));
+        const rows = stores.get(STORES.snapshotMessages);
+        if (rows.verifySnapshotKeys) {
+          if (!await rows.verifySnapshotKeys(id, header.messageCount)) throw new Error('聊天快照楼层索引不完整。');
+          header.state = 'ready'; await request(headers.put(header)); return snapshotSummary(header);
+        }
+        const keys = await request(rows.index("by_snapshot").getAllKeys(id));
         keys.sort((left, right) => left[1] - right[1]);
         if (keys.length !== header.messageCount || keys.some((key, index) => key[0] !== id || key[1] !== index)) throw new Error("聊天快照楼层索引不完整。");
         header.state = "ready"; await request(headers.put(header)); return snapshotSummary(header);
@@ -67,8 +72,9 @@ export function createSnapshotOperations({ runTransaction, requestToPromise: req
         if (!header) return { deleted: false };
         if (draftOnly && header.state !== "draft") return { deleted: false };
         if (header.contentHash !== expectedHash) throw new Error("聊天快照已变化，请重新确认删除。");
-        const rows = stores.get(STORES.snapshotMessages), keys = await request(rows.index("by_snapshot").getAllKeys(id));
-        for (const key of keys) await request(rows.delete(key));
+        const rows = stores.get(STORES.snapshotMessages);
+        if (rows.deleteForChat) await rows.deleteForChat(id);
+        else for (const key of await request(rows.index("by_snapshot").getAllKeys(id))) await request(rows.delete(key));
         await request(headers.delete(id)); return { deleted: true };
       });
     },

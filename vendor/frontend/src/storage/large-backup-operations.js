@@ -2,8 +2,9 @@ import { BACKUP_STORES, checkBackupBatch, backupFailure } from './backup-batches
 import { createBatchCleanupPlan } from '../backup/batch-cleanup.js';
 import { buildCleanupMetaPatch } from '../backup/cleanup.js';
 import { summarizeBackupCatalog } from '../backup/catalog.js';
+import { stableText } from './value-digest.js';
 
-export const LARGE_BACKUP_OPERATIONS = Object.freeze(['getBackupSummary', 'getBackupPage', 'getBackupCatalogPage', 'beginBackupWrite', 'appendBackupWrite', 'commitBackupWrite', 'abortBackupWrite', 'getBackupWriteStatus', 'deleteBackupV2', 'applyBackupPatch', 'deleteBackupBatchV2']);
+export const LARGE_BACKUP_OPERATIONS = Object.freeze(['getBackupSummary', 'getBackupPage', 'getBackupCatalogPage', 'beginBackupWrite', 'appendBackupWrite', 'commitBackupWrite', 'abortBackupWrite', 'getBackupWriteStatus', 'deleteBackupV2', 'applyBackupPatch', 'deleteBackupBatchV2', 'cleanupBackupWrites']);
 const assert = (value, text) => { if (!value) throw backupFailure(text); };
 const validStore = store => assert(BACKUP_STORES.includes(store), '备份类型无效。');
 const jobKey = id => { assert(typeof id === 'string' && /^[a-zA-Z0-9_-]{8,80}$/.test(id), '备份任务标识无效。'); return 'backup-write:' + id; };
@@ -12,6 +13,16 @@ export function createLargeBackupOperations(driver) {
   const transaction = (mode, callback) => driver.transaction(mode, async tx => { await tx.checkLock(); return callback(tx); });
   const revisionMatches = async (tx, expected) => assert(expected === await tx.revision(), '正式备份在操作期间发生变化，已有数据已保留。');
   return {
+    cleanupBackupWrites: () => transaction('readwrite', async tx => {
+      for (const job of await tx.jobs()) {
+        const age = Date.now() - Date.parse(job.updatedAt ?? job.createdAt);
+        if (job.state === 'draft' && (job.revision !== await tx.revision() || job.area !== await tx.area() || age > 15 * 60 * 1000) || job.state === 'committed' && age > 24 * 60 * 60 * 1000) {
+          await tx.stageDelete(job.id, 100);
+          if (!await tx.stageCount(job.id)) await tx.metaDelete(jobKey(job.id));
+        }
+      }
+      return true;
+    }),
     applyBackupPatch: options => transaction('readwrite', async tx => {
       const { chatKey, store, rows, meta, revision } = options; validStore(store); checkBackupBatch(rows); await revisionMatches(tx, revision);
       for (const row of rows) {
@@ -23,7 +34,7 @@ export function createLargeBackupOperations(driver) {
       const previous = await tx.get('chat_meta', chatKey) ?? { chatKey };
       const counts = await tx.counts(chatKey);
       await tx.put('chat_meta', { ...previous, ...relevantMeta(store, meta), ...(store === 'historical_changes' ? { historicalCount: counts.historical_changes, historicalUpdatedAt: new Date().toISOString() } : {}), chatKey });
-      await tx.bumpRevision(); return { state: 'committed' };
+      await tx.bumpRevision(); return { state: 'committed', committedRevision: await tx.revision() };
     }),
     getBackupSummary: chatKey => transaction('readonly', async tx => ({ meta: await tx.get('chat_meta', chatKey), counts: await tx.counts(chatKey), revision: await tx.revision() })),
     getBackupPage: options => transaction('readonly', async tx => {
@@ -49,10 +60,10 @@ export function createLargeBackupOperations(driver) {
         assert(job.store === 'pending_changes' ? typeof value.id === 'string' && value.id : Number.isSafeInteger(value.messageIndex) && value.messageIndex >= 0, '备份楼层无效。');
         if (job.store === 'full_messages' && job.replace) assert(value.messageIndex === start + i, '完整备份楼层不连续。');
         const old = await tx.stageGet(id, start + i);
-        if (start < job.written) assert(old && JSON.stringify(old) === JSON.stringify(value), '重复备份批次内容已经变化。');
+        if (start < job.written) assert(old && stableText(old) === stableText(value), '重复备份批次内容已经变化。');
         else await tx.stagePut(job, start + i, value);
       }
-      job.written = Math.max(job.written, start + rows.length); await tx.metaPut(jobKey(id), job); return { written: job.written };
+      job.written = Math.max(job.written, start + rows.length); job.updatedAt = new Date().toISOString(); await tx.metaPut(jobKey(id), job); return { written: job.written };
     }),
     commitBackupWrite: ({ id }) => transaction('readwrite', async tx => {
       const job = await tx.metaGet(jobKey(id)); assert(job, '备份暂存任务不存在。');
@@ -61,12 +72,14 @@ export function createLargeBackupOperations(driver) {
       await revisionMatches(tx, job.revision); assert(await tx.area() === job.area, '备份位置发生变化，暂存未提交。');
       if (job.replace) await tx.deleteChat(job.store, job.chatKey);
       let count = 0;
-      await tx.eachStage(id, async value => { if (job.store === 'full_messages' && job.replace) assert(value.messageIndex === count, '完整备份楼层不连续。'); await tx.put(job.store, value); count++; });
+      await tx.eachStage(id, async value => { if (job.store === 'full_messages' && job.replace) assert(value.messageIndex === count, '完整备份楼层不连续。');
+        if (job.store === 'historical_changes') value.firstCapturedAt = (await tx.get(job.store, [job.chatKey, value.messageIndex]))?.firstCapturedAt ?? value.firstCapturedAt;
+        await tx.put(job.store, value); count++; });
       assert(count === job.count, '备份暂存内容不完整。');
       const meta = await tx.get('chat_meta', job.chatKey) ?? { chatKey: job.chatKey };
       const counts = await tx.counts(job.chatKey);
       await tx.put('chat_meta', { ...meta, ...job.meta, ...(job.store === 'historical_changes' ? { historicalCount: counts.historical_changes, historicalUpdatedAt: new Date().toISOString() } : {}), chatKey: job.chatKey });
-      await tx.bumpRevision(); job.state = 'committed'; job.committedAt = new Date().toISOString();
+      await tx.bumpRevision(); job.state = 'committed'; job.committedAt = new Date().toISOString(); job.committedRevision = await tx.revision();
       await tx.metaPut(jobKey(id), job); await tx.stageDelete(id); return job;
     }),
     getBackupWriteStatus: id => transaction('readonly', tx => tx.metaGet(jobKey(id))),

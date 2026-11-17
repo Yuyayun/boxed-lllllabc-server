@@ -98,6 +98,7 @@ function getCleanupBlockedReason({ chat, type, summary }) {
   if (!chat.chatKey) {
     return "缺少聊天身份，不能清理。";
   }
+  if (chat.error) return '此聊天的备份摘要异常，请先检查，不能直接清理。';
   if (!summary.count) {
     return `当前没有${TYPE_LABELS[type]}可清理。`;
   }

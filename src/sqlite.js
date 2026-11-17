@@ -12,6 +12,7 @@ import { DATA_STORES } from '../vendor/frontend/src/storage/transfer-format.js';
 import {installStorageStats,initializeStorageStats,readStorageStats} from './storage-stats.js';
 import {upgradeLegacyDatabase,finishLegacyUpgrade,auditStorage} from './sqlite-maintenance.js';
 import { createSqliteBackupBatches } from './backup-batches.js';
+import { BACKUP_BUDGET, boundedRecordSize } from '../vendor/frontend/src/storage/backup-batches.js';
 
 const STORES = DATA_STORES;
 const APP_ID = 0x424f5844;
@@ -127,6 +128,12 @@ export class SqliteRepository {
   }
   store(name, budget) {
     if (!STORES.includes(name)) throw failure('invalid-request', '无效记录类型。', 400);
+    const mutationStatement = sql => {
+      const key = this.activeDataset() + ':' + sql;
+      this.mutationStatements ??= new Map();
+      if (!this.mutationStatements.has(key)) this.mutationStatements.set(key, this.prepare(sql));
+      return this.mutationStatements.get(key);
+    };
     const read = (sql, params = [], keys = false) => {
       sql=sql.replace(/\brecords\b/g,this.activeDataset()===0?'records':'records_next');
       const activeBudget=this.bulkCatalog ? {rows:0,bytes:0} : budget;
@@ -144,13 +151,30 @@ export class SqliteRepository {
       count: () => this.prepare('SELECT count(*) AS n FROM records WHERE store=?').get(name).n,
       chatKeys: () => {
         const keys=[];
-        for(const row of this.prepare('SELECT DISTINCT chat_key FROM records WHERE store=? ORDER BY chat_key').iterate(name)) {
+        for(const row of mutationStatement('SELECT DISTINCT chat_key FROM records WHERE store=? ORDER BY chat_key').iterate(name)) {
           if(keys.length>=MAX_ROWS)throw failure('too-large','目录聊天数超过读取限额，未执行清理。',413);
           keys.push(row.chat_key);
         }
         return keys;
       },
       get: (key) => read('SELECT payload FROM records WHERE store=? AND primary_key=?', [name, JSON.stringify(key)])[0],
+      getForMutation: key => { const row = this.prepare('SELECT payload FROM records WHERE store=? AND primary_key=?').get(name, JSON.stringify(key)); return row && decodeStorageValue(JSON.parse(row.payload)); },
+      countForChat: key => this.prepare('SELECT count(*) AS n FROM records WHERE store=? AND chat_key=?').get(name, key).n,
+      deleteForChat: key => this.prepare('DELETE FROM records WHERE store=? AND chat_key=?').run(name, key),
+      verifySnapshotKeys: (key, expected) => { const row = this.prepare("SELECT count(*) AS n,min(CAST(json_extract(primary_key,'$[1]') AS INTEGER)) AS first,max(CAST(json_extract(primary_key,'$[1]') AS INTEGER)) AS last FROM records WHERE store=? AND chat_key=?").get(name, key); return row.n === expected && row.first === 0 && row.last === expected - 1; },
+      eachForChat: async (key, callback) => {
+        let after = '';
+        while (true) {
+          const page = []; let bytes = 0;
+          for (const row of mutationStatement('SELECT primary_key,payload FROM records WHERE store=? AND chat_key=? AND primary_key>? ORDER BY primary_key LIMIT 50').iterate(name, key, after)) {
+            if (page.length && bytes + Buffer.byteLength(row.payload) > BACKUP_BUDGET.bytes) break;
+            page.push(row); bytes += Buffer.byteLength(row.payload);
+          }
+          if (!page.length) break;
+          for (const row of page) { this.checkCancelled(); await callback(decodeStorageValue(JSON.parse(row.payload))); }
+          after = page.at(-1).primary_key;
+        }
+      },
       getAll: () => read('SELECT payload FROM records WHERE store=? ORDER BY primary_key', [name]),
       page: ({ snapshotId, after, limit = 50 }) => {
         let sql = snapshotId
@@ -159,11 +183,11 @@ export class SqliteRepository {
         sql=sql.replace(/\brecords\b/g,this.activeDataset()===0?'records':'records_next');
         this.readStatements ??= new Map();
         if (!this.readStatements.has(sql)) this.readStatements.set(sql,this.prepare(sql));
-        const rows=[]; let bytes=0;
+        const rows=[]; let bytes=0, nodes=100;
         const params=snapshotId?[snapshotId,after,limit]:[name,JSON.stringify(after),limit];
         for(const row of this.readStatements.get(sql).iterate(...params)) {
-          const size=Buffer.byteLength(row.payload);if(rows.length&&bytes+size>2*1024*1024)break;
-          rows.push(decodeStorageValue(JSON.parse(row.payload)));bytes+=size;
+          const value=decodeStorageValue(JSON.parse(row.payload)),size=boundedRecordSize(value);if(rows.length&&(bytes+size.bytes>BACKUP_BUDGET.bytes||nodes+size.nodes>BACKUP_BUDGET.nodes))break;
+          rows.push(value);bytes+=size.bytes;nodes+=size.nodes;
         }
         return rows;
       },

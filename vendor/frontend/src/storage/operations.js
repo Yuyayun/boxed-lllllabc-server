@@ -244,6 +244,20 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
       { type: "full", store: STORES.fullMessages, index: INDEXES.fullByChat },
       { type: "historical", store: STORES.historicalChanges, index: INDEXES.historicalByChat },
     ];
+    if (stores.get(STORES.fullMessages).eachForChat) {
+      if (!allowTargetMerge) {
+        for (const config of configurations) if (await stores.get(config.store).countForChat(targetKey)) return { status: 'conflict', sourceKey, targetKey };
+      }
+      for (const config of configurations) {
+        const store = stores.get(config.store);
+        await store.eachForChat(sourceKey, async record => {
+          const migrated = rekeyBackupRecord(record, targetKey, config.type);
+          const previous = allowTargetMerge ? await store.getForMutation(primaryKeyForRecord(migrated, config.type)) : undefined;
+          const next = previous ? mergeRenamedBackupRecords({ type: config.type, sourceRecords: [record], targetRecords: [previous], targetKey })[0] : migrated;
+          await requestToPromise(store.put(next)); await requestToPromise(store.delete(primaryKeyForRecord(record, config.type)));
+        });
+      }
+    } else {
     const recordSets = await Promise.all(configurations.map(async (config) => {
       const store = stores.get(config.store);
       const index = store.index(config.index);
@@ -269,11 +283,13 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
         await requestToPromise(store.delete(primaryKeyForRecord(record, type)));
       }
     }
+    }
 
     const sourceMeta = metas.find((meta) => meta.chatKey === sourceKey);
     // Snapshot IDs and immutable message rows stay unchanged during Rename.
     const snapshots = stores.get(STORES.snapshots);
-    for (const header of await requestToPromise(snapshots.index("by_chat").getAll(sourceKey))) {
+    if (snapshots.eachForChat) await snapshots.eachForChat(sourceKey, header => requestToPromise(snapshots.put({ ...header, chatKey: targetKey })));
+    else for (const header of await requestToPromise(snapshots.index("by_chat").getAll(sourceKey))) {
       await requestToPromise(snapshots.put({ ...header, chatKey: targetKey }));
     }
     const targetMeta = metas.find((meta) => meta.chatKey === targetKey);
@@ -590,6 +606,7 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
   }
 
   async function deleteMessagesForChat(store, indexName, chatKey) {
+    if (store.deleteForChat) return store.deleteForChat(chatKey);
     const index = store.index(indexName);
     const keys = await requestToPromise(index.getAllKeys(chatKey));
 
