@@ -2,6 +2,8 @@
 
 2026-11-17，分支 `codex/large-chat-backups`，基于 main／v1.0.1 提交 `5d8fff54cfcb5ea6dca522ff994431777b9860d2`。
 
+本轮版本为 1.0.2，package 与 /status 的 pluginVersion 一致；更新说明已写入 CHANGELOG.md。尚未推送或发布。
+
 协议继续为 6，SQLite user_version 继续为 4。没有新表、索引、迁移或提高限额。
 
 ## 新能力

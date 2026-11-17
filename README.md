@@ -2,7 +2,7 @@
 
 为[箱装辣白菜前端扩展](https://github.com/Yuyayun/boxed-lllllabc)提供可选的服务器备份存储（SQLite）。前后端分仓库、分别安装。
 
-**当前正式版本：1.0.1。** [正式发布与下载](https://github.com/Yuyayun/boxed-lllllabc-server/releases/tag/v1.0.1)。请与前端扩展 1.0.1 配套使用。
+**当前分支版本：1.0.2，尚未发布。** 最近正式版为 1.0.1，[正式版下载](https://github.com/Yuyayun/boxed-lllllabc-server/releases/tag/v1.0.1)。配合前端 1.0.2 使用完整的超大聊天修复能力，旧前端接口继续保留。
 
 只安装前端即可使用浏览器本地备份。安装本插件后，不会自动切换位置或迁移数据；需要使用服务器存储时，再到前端确认切换。
 
