@@ -8,20 +8,21 @@ export function measureBackupValue(value) {
   const count = item => !Array.isArray(item) ? 0 : 1 + item.reduce((sum, child) => sum + count(child), 0);
   return { bytes: new TextEncoder().encode(JSON.stringify(encoded)).byteLength, nodes: count(encoded) };
 }
-export function backupBatches(rows) {
-  const result = []; let batch = [], bytes = 1024, nodes = 100;
-  for (const row of rows) {
+export function* iterateBackupBatches(rows, mapRow = value => value) {
+  let batch = [], bytes = 1024, nodes = 100, index = 0;
+  for (const input of rows) {
+    const row = mapRow(input, index++);
     const size = measureBackupValue(row);
     // A single record still has to fit the existing wire/storage guards.
     if (size.bytes > 8 * 1024 * 1024 - 4096 || size.nodes > 180000) throw backupFailure('单条备份超过安全上限，已有备份已保留。', 'backup-limit');
     if (batch.length && (batch.length >= BACKUP_BUDGET.rows || bytes + size.bytes > BACKUP_BUDGET.bytes || nodes + size.nodes > BACKUP_BUDGET.nodes)) {
-      result.push(batch); batch = []; bytes = 1024; nodes = 100;
+      yield batch; batch = []; bytes = 1024; nodes = 100;
     }
     batch.push(row); bytes += size.bytes; nodes += size.nodes;
   }
-  if (batch.length) result.push(batch);
-  return result;
+  if (batch.length) yield batch;
 }
+export const backupBatches = rows => [...iterateBackupBatches(rows)];
 export function checkBackupBatch(rows) {
   if (!Array.isArray(rows) || !rows.length || backupBatches(rows).length !== 1) throw backupFailure('备份批次超过预算。', 'backup-limit');
 }
@@ -43,30 +44,32 @@ export async function readBackupRecords(session, chatKey, store, { hashesOnly = 
   return rows.sort((a, b) => (a.messageIndex ?? Infinity) - (b.messageIndex ?? Infinity));
 }
 
-export async function writeBackupRecords(session, { chatKey, store, rows, meta = {}, replace = false, summary, sourceUnchanged = () => true }) {
-  const batches = backupBatches(rows);
+export async function writeBackupRecords(session, { chatKey, store, rows, meta = {}, replace = false, summary, sourceUnchanged = () => true, validateSource = sourceUnchanged, mapRow }) {
+  const iterator = iterateBackupBatches(rows, mapRow), first = iterator.next(), second = iterator.next();
+  function* batches() { if (!first.done) yield first.value; if (!second.done) yield second.value; yield* iterator; }
   if (!session.capabilities?.boundedBackup) {
-    if (batches.length > 1) throw backupFailure('服务器备份插件需要更新，才能分批处理此聊天。', 'backup-upgrade-required');
-    if (!sourceUnchanged()) throw backupFailure('来源聊天已经变化，已有备份已保留。', 'backup-source-changed');
-    if (store === 'full_messages') return session[replace ? 'replaceFullSnapshot' : 'putFullMessages']({ chatKey, messages: rows, meta });
-    if (store === 'recent_messages') return session.replaceRecentSnapshot({ meta: { ...meta, chatKey }, messages: rows });
-    if (store === 'pending_changes' && replace) return session.replacePendingChanges({ chatKey, records: rows });
-    return session[store === 'pending_changes' ? 'putPendingChanges' : 'putHistoricalChanges'](rows);
+    if (!second.done) throw backupFailure('服务器备份插件需要更新，才能分批处理此聊天。', 'backup-upgrade-required');
+    if (!sourceUnchanged() || !validateSource()) throw backupFailure('来源聊天已经变化，已有备份已保留。', 'backup-source-changed');
+    const values = first.value ?? [];
+    if (store === 'full_messages') return session[replace ? 'replaceFullSnapshot' : 'putFullMessages']({ chatKey, messages: values, meta });
+    if (store === 'recent_messages') return session.replaceRecentSnapshot({ meta: { ...meta, chatKey }, messages: values });
+    if (store === 'pending_changes' && replace) return session.replacePendingChanges({ chatKey, records: values });
+    return session[store === 'pending_changes' ? 'putPendingChanges' : 'putHistoricalChanges'](values);
   }
   const state = summary ?? await session.getBackupSummary(chatKey);
-  if (!replace && batches.length <= 1 && rows.length) {
-    if (!sourceUnchanged()) throw backupFailure('来源聊天已经变化，已有备份已保留。', 'backup-source-changed');
-    return session.applyBackupPatch({ chatKey, store, rows, meta, revision: state.revision });
+  if (!replace && second.done && !first.done) {
+    if (!sourceUnchanged() || !validateSource()) throw backupFailure('来源聊天已经变化，已有备份已保留。', 'backup-source-changed');
+    return session.applyBackupPatch({ chatKey, store, rows: first.value, meta, revision: state.revision });
   }
   const job = await session.beginBackupWrite({ chatKey, store, count: rows.length, revision: state.revision, replace, meta });
   let committing = false;
   try {
     let start = 0;
-    for (const batch of batches) {
+    for (const batch of batches()) {
       if (!sourceUnchanged()) throw backupFailure('来源聊天已经变化，已有备份已保留。', 'backup-source-changed');
       await session.appendBackupWrite({ id: job.id, start, rows: batch }); start += batch.length;
     }
-    if (!sourceUnchanged()) throw backupFailure('来源聊天已经变化，已有备份已保留。', 'backup-source-changed');
+    if (!sourceUnchanged() || !validateSource()) throw backupFailure('来源聊天已经变化，已有备份已保留。', 'backup-source-changed');
     committing = true;
     try { return await session.commitBackupWrite({ id: job.id }); }
     catch (error) {
