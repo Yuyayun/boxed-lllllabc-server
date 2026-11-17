@@ -10,7 +10,7 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
   let worker;
   let workerError;
   let logger,maintenance;
-  const capabilities={batchTransfer:3,recovery:1,supervision:1,logs:1};
+  const capabilities={batchTransfer:3,recovery:1,supervision:1,logs:1,boundedBackup:1};
   const getLogger=()=>logger??=new RuntimeLog(path.dirname(databasePath(host)));
   let logHealth={available:true},lastTerminalProgress=0;
   const frontendLogActivity=new Map();

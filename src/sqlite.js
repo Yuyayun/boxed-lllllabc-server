@@ -11,6 +11,7 @@ import { createSnapshotOperations } from '../vendor/frontend/src/storage/snapsho
 import { DATA_STORES } from '../vendor/frontend/src/storage/transfer-format.js';
 import {installStorageStats,initializeStorageStats,readStorageStats} from './storage-stats.js';
 import {upgradeLegacyDatabase,finishLegacyUpgrade,auditStorage} from './sqlite-maintenance.js';
+import { createSqliteBackupBatches } from './backup-batches.js';
 
 const STORES = DATA_STORES;
 const APP_ID = 0x424f5844;
@@ -56,6 +57,7 @@ export class SqliteRepository {
     } catch (error) { this.db.close(); throw error; }
   }
   configure(readOnly=false){
+       this.largeBackupOperations = createSqliteBackupBatches(this);
       this.operations = createBackupOperations({ runTransaction: this.transaction.bind(this), requestToPromise: (value) => value, storageMode: 'sqlite', catalogDriver: {
         keys: store => store.chatKeys(), count: store => store.count(), check: () => this.checkCancelled(),
       } });
@@ -224,6 +226,7 @@ export class SqliteRepository {
     this.bulkCatalog = ['getBackupCatalog','deleteBackupBatch'].includes(operation);
     try {
       if (operation === 'deletePendingChangesIfUnchanged') args = [args[0], { shouldDelete: () => !cancel || !Atomics.load(cancel, 0) }];
+      if (this.largeBackupOperations[operation]) return await this.largeBackupOperations[operation](...args);
       return await (this.snapshotOperations[operation] ?? this.operations[operation])(null, ...args);
     } finally { this.cancel = null; this.bulkCatalog = false; }
   }

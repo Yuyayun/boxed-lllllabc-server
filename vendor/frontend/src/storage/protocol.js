@@ -22,6 +22,7 @@ export function validateBatchCall(action, args, mode) {
   return args;
 }
 export const STORAGE_OPERATIONS = Object.freeze([
+  'getBackupSummary', 'getBackupPage', 'getBackupCatalogPage', 'beginBackupWrite', 'appendBackupWrite', 'commitBackupWrite', 'abortBackupWrite', 'getBackupWriteStatus', 'deleteBackupV2', 'applyBackupPatch',
   "getChatMeta", "putChatMeta", "updateChatMetaSummary", "getRecentMessages",
   "replaceRecentSnapshot", "getFullMessages", "putFullMessages", "replaceFullSnapshot",
   "getHistoricalChanges", "putHistoricalChanges", "getPendingChanges", "putPendingChanges",
