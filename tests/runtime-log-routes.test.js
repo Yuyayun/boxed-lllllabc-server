@@ -44,5 +44,15 @@ test('清空任务与日常保存错误的浏览器记录和终端说明一致�
   const clear=(await f.call('/logs?category=cleanup')).value.entries;assert.equal(clear.length,2);assert.ok(clear.every(row=>row.scope==='cleanup'));assert.equal((await f.call('/logs?category=migration')).value.entries.length,0);
   assert.ok(lines.some(line=>line.includes('清空旧位置：浏览器本地备份')&&line.includes('已清空')));assert.ok(lines.filter(line=>line.includes('清空旧位置')).every(line=>!line.includes('切换备份位置')));
   const failed=await f.operation('putChatMeta',[{}]);assert.equal(failed.ok,false);
-  const errors=(await f.call('/logs?category=error')).value.entries;assert.ok(errors.some(row=>row.operation==='putChatMeta'&&row.category==='error'));assert.ok(lines.some(line=>line.includes('保存聊天信息')&&line.includes('异常')));
+  const errors=(await f.call('/logs?category=error')).value.entries;assert.equal(errors.length,1);assert.ok(errors.some(row=>row.operation==='putChatMeta'&&row.category==='error'));assert.ok(lines.some(line=>line.includes('保存聊天信息')&&line.includes('异常')));
+});
+
+test('分批读写错误保留操作和备份类型，校验失败不泄露请求中的自定义内容',async t=>{
+  const f=await routeFixture(t);
+  assert.equal((await f.operation('getBackupPage',[{chatKey:'synthetic',store:'full_messages',revision:-1}])).ok,false);
+  const rows=(await f.call('/logs?category=error')).value.entries;
+  assert.equal(rows.length,1);assert.equal(rows[0].operation,'getBackupPage');assert.equal(rows[0].backupStore,'full_messages');assert(Number.isSafeInteger(rows[0].queuedMs));
+  assert.equal((await f.call('/operation',{protocol:STORAGE_PROTOCOL,operation:'SECRET_CONTENT',args:[]})).ok,false);
+  const all=(await f.call('/logs?category=error')).value.entries;
+  assert.ok(all.some(row=>row.operation==='_operation'));assert.doesNotMatch(JSON.stringify(all),/SECRET_CONTENT/);
 });

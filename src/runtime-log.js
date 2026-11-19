@@ -50,7 +50,10 @@ export class RuntimeLog {
     const error=!!input.errorCode||['error','timeout'].includes(input.stage),stage=STAGES.has(input.stage)?input.stage:'progress';
     const entry={seq:++this.state.seq,timestamp,category:error?'error':scope,scope,...(taskId?{taskId}:{}),stage};
     for(const name of ['operation','errorCode','from','to','kind']){const value=safeCode(input[name]);if(value)entry[name]=value;}
-    for(const name of ['count','verified','batch','bytes','elapsedMs','progressSeq','sqliteCode'])if(Number.isSafeInteger(input[name])&&input[name]>=0)entry[name]=input[name];
+    if(['full_messages','recent_messages','historical_changes','pending_changes'].includes(input.backupStore))entry.backupStore=input.backupStore;
+    if(['draft','committed','aborted','missing'].includes(input.backupState))entry.backupState=input.backupState;
+    const workStage=safeCode(input.workStage);if(workStage)entry.workStage=workStage;
+    for(const name of ['count','verified','batch','bytes','elapsedMs','queuedMs','progressSeq','sqliteCode'])if(Number.isSafeInteger(input[name])&&input[name]>=0)entry[name]=input[name];
     const previous=await this.getMeta(group),meta=previous??{version:1,group,startedAt:timestamp,endedAt:null,hadError:false,status:taskId?'pending':'completed'};
     meta.hadError ||= error||stage==='recover';meta.lastSeq=entry.seq;
     if(!taskId||TERMINAL.has(stage)){meta.endedAt=timestamp;meta.status=taskId?stage:'completed';}

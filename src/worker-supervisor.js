@@ -1,5 +1,6 @@
 import { Worker } from 'node:worker_threads';
 import { failure } from './errors.js';
+import {runtimeLogContext,runtimeLogOutcome} from '../vendor/frontend/src/storage/runtime-log-labels.js';
 
 // Main-thread supervision remains runnable when synchronous SQLite work blocks
 // the worker. Heartbeats and completed work are deliberately different clocks.
@@ -12,18 +13,18 @@ export class SqliteWorker {
     this.worker.on('error',error=>this.fail(error));
     this.worker.on('exit',code=>{if(!this.closed)this.fail(failure('outcome-unknown',`SQLite 工作线程异常退出（${code}），需核对持久任务后恢复。`));});
   }
-  notify(event){try{this.observe?.(event);}catch{/* Logging cannot change a committed database outcome. */}}
+  notify(event){try{if(!this.observe)return false;this.observe(event);return true;}catch{return false;/* Logging cannot change a committed database outcome. */}}
   message(message) {
     this.lastMessageAt=Date.now();
     if(message.type==='heartbeat')return;
     if(message.type==='progress') {
       this.lastProgressAt=Date.now();this.progressSeq++;this.stage=message.stage??this.stage;
       this.metrics=message.metrics??{};
-      const entry=this.pending.get(message.id);if(entry){entry.lastProgressAt=this.lastProgressAt;entry.workSeq=(entry.workSeq??0)+1;}
-      if(!entry||!entry.lastLoggedProgressAt||Date.now()-entry.lastLoggedProgressAt>=1000){if(entry)entry.lastLoggedProgressAt=Date.now();this.notify({...this.contexts.get(entry?.taskId),taskId:entry?.taskId,operation:entry?.action??entry?.operation,stage:'progress',progressSeq:this.progressSeq,...message.metrics});}return;
+      const entry=this.pending.get(message.id);if(entry){entry.lastProgressAt=this.lastProgressAt;entry.workSeq=(entry.workSeq??0)+1;entry.workStage=message.stage;}
+      if(!entry||!entry.lastLoggedProgressAt||Date.now()-entry.lastLoggedProgressAt>=1000){if(entry)entry.lastLoggedProgressAt=Date.now();this.notify({...this.contexts.get(entry?.taskId),...entry?.logContext,taskId:entry?.taskId,operation:entry?.action??entry?.operation??'initialize',workStage:message.stage,stage:'progress',progressSeq:this.progressSeq,...message.metrics});}return;
     }
     if(message.ready){this.initializing=false;this.lastProgressAt=Date.now();this.resolveReady();return;}
-    if(message.startupError){this.startupFailed=true;const error=Object.assign(new Error(message.startupError.message),{code:'database-unavailable'});this.rejectReady(error);this.notify({stage:'error',operation:this.stage??'initialize',errorCode:message.startupError.code??error.code,sqliteCode:message.startupError.sqliteCode});return;}
+    if(message.startupError){this.startupFailed=true;const error=Object.assign(new Error(message.startupError.message),{code:'database-unavailable'});error.runtimeLogReported=this.notify({stage:'error',operation:'initialize',workStage:this.stage,errorCode:message.startupError.code??error.code,sqliteCode:message.startupError.sqliteCode});this.rejectReady(error);return;}
     const entry=this.pending.get(message.id);if(!entry)return;
     if(message.type==='started'){
       entry.startedAt=Date.now();entry.lastProgressAt=entry.startedAt;this.activeId=message.id;this.stage=entry.action??entry.operation;this.metrics={};
@@ -31,12 +32,13 @@ export class SqliteWorker {
     }
     this.pending.delete(message.id);clearInterval(entry.timer);entry.cleanup();if(this.activeId===message.id)this.activeId=null;this.lastProgressAt=Date.now();
     const state=message.value;
+    if(!message.error)Object.assign(entry.logContext,runtimeLogOutcome(entry.operation,state));
     const receipt=state?.receipt??state;
     if(entry.taskId&&['switch','clear'].includes(receipt?.kind))this.contexts.set(entry.taskId,{kind:receipt.kind,from:receipt.from,to:receipt.to});
-    this.notify({...this.contexts.get(entry.taskId),taskId:entry.taskId,operation:entry.action??entry.operation,stage:message.error?'error':'finished',errorCode:message.error?.code??(message.error?'database-error':undefined),sqliteCode:message.error?.sqliteCode,elapsedMs:Date.now()-entry.queuedAt,count:state?.cleanupPhase?state.cleaned:state?.summary?.count,verified:state?.kind==='clear'?undefined:state?.verified,batch:state?.verifiedBatch,bytes:state?.summary?.bytes});
+    const reported=this.notify({...this.contexts.get(entry.taskId),...entry.logContext,taskId:entry.taskId,operation:entry.action??entry.operation,workStage:entry.workStage,stage:message.error?'error':'finished',errorCode:message.error?.code??(message.error?'database-error':undefined),sqliteCode:message.error?.sqliteCode,elapsedMs:Date.now()-entry.queuedAt,queuedMs:(entry.startedAt??Date.now())-entry.queuedAt,count:state?.cleanupPhase?state.cleaned:state?.summary?.count,verified:state?.kind==='clear'?undefined:state?.verified,batch:state?.verifiedBatch,bytes:state?.summary?.bytes});
     if(!this.activeId){this.stage=null;this.metrics={};}
     if(entry.action==='release'||entry.action==='begin'&&message.error)this.contexts.delete(entry.taskId);
-    if(message.error)entry.reject(Object.assign(new Error(message.error.message),message.error));else entry.resolve(state);
+    if(message.error)entry.reject(Object.assign(new Error(message.error.message),message.error,{runtimeLogReported:reported}));else entry.resolve(state);
   }
   supervision() {
     const now=Date.now(),entry=this.pending.get(this.activeId)??this.pending.values().next().value,idleMs=now-(entry?.lastProgressAt??entry?.queuedAt??this.lastProgressAt),silentMs=now-this.lastMessageAt;
@@ -45,7 +47,7 @@ export class SqliteWorker {
   }
   fail(error) {
     if(this.closed)return;this.closed=true;this.rejectReady(error);
-    for(const entry of this.pending.values()){clearInterval(entry.timer);entry.cleanup();entry.reject(error);this.notify({...this.contexts.get(entry.taskId),taskId:entry.taskId,operation:entry.action??entry.operation,stage:'error',errorCode:error.code??'worker-exit'});}
+    for(const entry of this.pending.values()){clearInterval(entry.timer);entry.cleanup();const reported=this.notify({...this.contexts.get(entry.taskId),...entry.logContext,taskId:entry.taskId,operation:entry.action??entry.operation,workStage:entry.workStage,stage:'error',errorCode:error.code??'worker-exit',elapsedMs:Date.now()-entry.queuedAt,queuedMs:(entry.startedAt??Date.now())-entry.queuedAt});entry.reject(Object.assign(new Error(error.message,{cause:error}),error,{runtimeLogReported:reported}));}
     this.pending.clear();this.contexts.clear();void this.worker.terminate();
   }
   async call(operation,args,owner,{signal,authorize}={}) {
@@ -57,10 +59,10 @@ export class SqliteWorker {
     const taskId=operation==='_batchTransfer'?(action==='begin'?args[1]?.[0]?.id:args[1]?.[0]):operation==='_transfer'?args[1]?.id:undefined;
     if(taskId&&action==='begin'){const input=args[1]?.[0];this.contexts.set(taskId,{kind:input.kind??'switch',from:input.from,to:input.to});}
     return new Promise((resolve,reject)=>{
-      const entry={resolve,reject,queuedAt:Date.now(),operation,action,taskId,cleanup:()=>signal?.removeEventListener('abort',abort)};
+      const entry={resolve,reject,queuedAt:Date.now(),operation,action,taskId,logContext:runtimeLogContext(operation,args),cleanup:()=>signal?.removeEventListener('abort',abort)};
       entry.timer=setInterval(()=>{
         const latest=entry.startedAt?entry.lastProgressAt:Math.max(entry.queuedAt,this.lastProgressAt);
-        if(!entry.timedOut&&Date.now()-latest>this.timeoutMs){entry.timedOut=true;abort();entry.reject(failure('outcome-unknown','SQLite 等待超时，长时间没有有效进展；请求结果待核对，工作线程未被自动终止。'));this.notify({...this.contexts.get(taskId),taskId,operation:action??operation,stage:'timeout',errorCode:'outcome-unknown',elapsedMs:Date.now()-entry.queuedAt});}
+        if(!entry.timedOut&&Date.now()-latest>this.timeoutMs){entry.timedOut=true;abort();const error=failure('outcome-unknown','SQLite 等待超时，长时间没有有效进展；请求结果待核对，工作线程未被自动终止。');error.runtimeLogReported=this.notify({...this.contexts.get(taskId),...entry.logContext,taskId,operation:action??operation,workStage:entry.workStage,stage:'timeout',errorCode:error.code,elapsedMs:Date.now()-entry.queuedAt,queuedMs:(entry.startedAt??Date.now())-entry.queuedAt});entry.reject(error);}
       },Math.max(5,Math.min(1000,this.timeoutMs/4)));
       this.pending.set(id,entry);
       this.ready.then(async()=>{

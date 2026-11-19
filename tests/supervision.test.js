@@ -31,3 +31,17 @@ test('清空任务在线程失败时仍保留真实操作类别，结束后释�
   const task=worker.call('_batchTransfer',['begin',[{id:'clear-worker-fault',kind:'clear',from:'sqlite',to:'indexeddb'}]],'owner'),failed=assert.rejects(task,/injected/);
   try{await delay(5);worker.fail(Object.assign(new Error('injected worker exit'),{code:'worker-exit'}));await failed;assert.ok(events.some(entry=>entry.stage==='error'&&entry.kind==='clear'&&entry.to==='indexeddb'));assert.equal(worker.contexts.size,0);}finally{await worker.close();}
 });
+
+test('错误只携带固定的操作上下文和等待时间，记录器失效时允许路由补记',async()=>{
+  for(const observeWorks of [true,false]){
+    const fake=new WorkerFixture(),worker=new SqliteWorker('unused',{workerFactory:()=>fake}),events=[];
+    worker.observe=event=>{if(!observeWorks)throw new Error('injected logger failure');events.push(event);};
+    try{
+      const task=worker.call('getBackupPage',[{store:'full_messages',chatKey:'SECRET_CHAT_KEY'}],'owner');
+      const rejected=assert.rejects(task,error=>error.code==='backup-version-changed'&&error.runtimeLogReported===observeWorks);
+      await delay(5);worker.pending.get(fake.job.id).queuedAt-=2000;
+      fake.emit('message',{id:fake.job.id,error:{code:'backup-version-changed',message:'SECRET_BODY'}});await rejected;
+      if(observeWorks){const entry=events.find(event=>event.stage==='error');assert.equal(entry.operation,'getBackupPage');assert.equal(entry.backupStore,'full_messages');assert(entry.queuedMs>=2000);assert.doesNotMatch(JSON.stringify(events),/SECRET/);}
+    }finally{await worker.close();}
+  }
+});
