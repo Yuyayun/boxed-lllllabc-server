@@ -51,7 +51,7 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
     }
     catch (error) { workerError = error; throw error; }
   };
-  const route = (handler) => async (request, response) => {
+  const route = (handler, operation = 'request') => async (request, response) => {
     response.set('Cache-Control', 'no-store');
     let streaming=false,timer;
     const send=value=>{
@@ -80,7 +80,7 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
     } catch (error) {
       console.error('[boxed-lllllabc-server]', error.message);
       const safe = safeError(error);
-      if(!String(request.url??'').includes('/logs'))await writeLog({stage:'error',operation:'request',errorCode:safe.code});
+      if(!String(request.url??'').includes('/logs'))await writeLog({stage:'error',operation,errorCode:safe.code});
       if (!response.destroyed){if(!streaming)response.status(safe.status||503);send({ ok:false,code:safe.code,reason:safe.message });}
     }finally{clearInterval(timer);}
   };
@@ -105,7 +105,7 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
   router.get('/status', route(async (request, owner, signal) => ({
     pluginVersion: '1.0.3', state: 'connected',
     database: await getWorker().call('_status', [], owner, { signal, authorize: () => authorize(host, request) }),
-  })));
+  }), '_status'));
   router.post('/operation', route(async (request, owner, signal) => {
     const body = request.body;
     if (body?.protocol !== STORAGE_PROTOCOL) throw failure('protocol-incompatible', '前后端存储协议不兼容，请升级对应插件。', 409);

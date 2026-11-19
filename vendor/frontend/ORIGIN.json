@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/Yuyayun/boxed-lllllabc",
-  "revision": "ff6005e79773ee192a9b1e1b716d0f11ea67a53f",
+  "revision": "8fa218badf57b904ca390b9b3702d02e37c1543f",
   "licenseRevision": "2bde1b8976b0a82e00f6f0d4c2b8b53a123ca5d3",
   "note": "Source modules are synchronized from revision, except the intentional differences listed below. LICENSE is synchronized separately from licenseRevision. Maintain these transaction/protection modules together with the frontend. Preserve vendor/frontend/LICENSE.",
   "intentionalDifferences": [

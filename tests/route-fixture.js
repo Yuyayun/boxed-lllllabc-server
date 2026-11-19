@@ -24,5 +24,6 @@ export async function routeFixture(t,{fault=false,createWorker}={}){
   t.after(async()=>{await routes.close();await new Promise(resolve=>server.close(resolve));assert.equal(path.dirname(await fs.realpath(root)),temporary);await fs.rm(root,{recursive:true});});
   const call=async(route,body)=>{const response=await fetch(origin+route,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','X-Boxed-Test':nonce},...(body?{body:JSON.stringify(body)}:{})});return response.json();};
   const operation=async(operation,args)=>{const result=await call('/operation',{protocol:STORAGE_PROTOCOL,operation,args:encodeStorageValue(args)});return {...result,value:result.value===undefined?undefined:decodeStorageValue(result.value)};};
-  return {root,storage,faultPath,call,operation};
+  const request=(route,options={})=>fetch(origin+route,{...options,headers:{...options.headers,'X-Boxed-Test':nonce}});
+  return {root,storage,faultPath,call,operation,request};
 }
