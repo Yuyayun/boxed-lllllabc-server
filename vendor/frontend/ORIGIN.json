@@ -1,7 +1,8 @@
 {
   "repository": "https://github.com/Yuyayun/boxed-lllllabc",
-  "revision": "a5a891d61f12d02f53395005dcf8f18e15e87c48",
-  "note": "Exact source copies; maintain these transaction/protection modules together with the frontend. Preserve vendor/frontend/LICENSE.",
+  "revision": "02873a4d8c69197aeacfaf15a944bd2f7da30d58",
+  "licenseRevision": "2bde1b8976b0a82e00f6f0d4c2b8b53a123ca5d3",
+  "note": "Exact source copies from revision; LICENSE is synchronized separately from licenseRevision. Maintain these transaction/protection modules together with the frontend. Preserve vendor/frontend/LICENSE.",
   "files": [
     "src/storage/operations.js",
     "src/storage/catalog-reader.js",
@@ -27,7 +28,10 @@
     "src/storage/managed.js",
     "src/storage/control.js",
     "src/storage/legacy-recovery.js",
-    "src/storage/runtime-log-format.js"
+    "src/storage/runtime-log-format.js",
+    "src/storage/backup-batches.js",
+    "src/storage/backup-catalog-summary.js",
+    "src/storage/large-backup-operations.js"
   ],
   "worktreeModified": false
 }

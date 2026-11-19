@@ -105,4 +105,10 @@ Git 安装可在插件目录执行 `git pull --ff-only` 更新当前分支；ZIP
 
 [更新日志](CHANGELOG.md) 面向使用者；最新调整见[整改与实测对照](docs/acceptance/1.0.1-remediation-report.md)，此前测试见[本机验收记录](docs/acceptance/1.0.1-desktop-acceptance.md)，[docs/acceptance](docs/acceptance/README.md) 保留历次阶段记录。
 
-作者：**辣白菜 / labaicai0969**。采用 [LICENSE](LICENSE) 中的 AFPL 9；本插件可免费使用，禁止任何形式的商业用途。`vendor/frontend` 保留共用模块的原始副本、许可及来源信息。
+作者：**辣白菜 / labaicai0969**。
+
+本项目采用 [CC BY-NC-SA 4.0](LICENSE) 许可：允许在署名、非商业的前提下使用、修改与分享；公开分享改编或衍生作品时，应继续采用 CC BY-NC-SA 4.0。完整授权范围以 LICENSE 正文为准。
+
+自本次许可证迁移提交起采用 CC BY-NC-SA 4.0；此前已发布版本仍适用其发布时附带的许可证。
+
+`vendor/frontend` 保留前端共用模块的来源信息及对应许可；`ORIGIN.json` 的 `revision` 记录源码来源提交，`licenseRevision` 记录许可证来源提交。
