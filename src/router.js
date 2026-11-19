@@ -10,7 +10,7 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
   let worker;
   let workerError;
   let logger,maintenance;
-  const capabilities={batchTransfer:3,recovery:1,supervision:1,logs:1,boundedBackup:1};
+  const capabilities={batchTransfer:3,recovery:1,supervision:1,logs:1,boundedBackup:1,pendingBackupProof:1};
   const getLogger=()=>logger??=new RuntimeLog(path.dirname(databasePath(host)));
   let logHealth={available:true},lastTerminalProgress=0;
   const frontendLogActivity=new Map();
@@ -103,7 +103,7 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
   let cleanupCursor=0;
   maintenance=setInterval(()=>{if(logger)void logger.cleanup({cursor:cleanupCursor,maxFiles:2}).then(result=>{cleanupCursor=result.cursor??0;}).catch(logFailed);},60000);maintenance.unref();
   router.get('/status', route(async (request, owner, signal) => ({
-    pluginVersion: '1.0.2', state: 'connected',
+    pluginVersion: '1.0.3', state: 'connected',
     database: await getWorker().call('_status', [], owner, { signal, authorize: () => authorize(host, request) }),
   })));
   router.post('/operation', route(async (request, owner, signal) => {

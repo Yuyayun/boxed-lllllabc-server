@@ -13,6 +13,8 @@ import {installStorageStats,initializeStorageStats,readStorageStats} from './sto
 import {upgradeLegacyDatabase,finishLegacyUpgrade,auditStorage} from './sqlite-maintenance.js';
 import { createSqliteBackupBatches } from './backup-batches.js';
 import { BACKUP_BUDGET, boundedRecordSize } from '../vendor/frontend/src/storage/backup-batches.js';
+import { BACKUP_STORES } from '../vendor/frontend/src/storage/backup-batches.js';
+import { backupVersionKey } from '../vendor/frontend/src/storage/backup-versions.js';
 
 const STORES = DATA_STORES;
 const APP_ID = 0x424f5844;
@@ -121,7 +123,7 @@ export class SqliteRepository {
       if(state?.id!==id)throw new Error('目标任务身份与登记簿不一致。');
       const result=action==='commit'?commitDataset(state,{active,revision,expectedManifest:manifest}):rollbackDataset(state,{active,revision});
       if(action==='commit'&&state.phase!=='committed'||action==='rollback'&&state.phase==='committed') {
-        put(ACTIVE_DATASET_KEY,action==='commit'?result.dataset:result.previousDataset);put('revision',revision+1);
+        put(ACTIVE_DATASET_KEY,action==='commit'?result.dataset:result.previousDataset);put('revision',revision+1);put('backup-scope-epoch',(read('backup-scope-epoch')??0)+1);
       }
       put('transfer:'+id,result);this.checkCancelled();this.db.exec('COMMIT');return result;
     }catch(error){this.rollback(error);}
@@ -218,7 +220,7 @@ export class SqliteRepository {
       },
     };
   }
-  async transaction(_db, names, mode, callback) {
+  async transaction(_db, names, mode, callback, { writeStores = names } = {}) {
     this.checkCancelled();
     this.db.exec(mode === 'readwrite' ? 'BEGIN IMMEDIATE' : 'BEGIN');
     try {
@@ -226,7 +228,10 @@ export class SqliteRepository {
       const budget = { rows: 0, bytes: 0 };
       const result = await callback(new Map(names.map((name) => [name, this.store(name, budget)])));
       this.checkCancelled();
-      if (mode === 'readwrite') this.db.prepare("INSERT INTO plugin_meta VALUES('revision','1') ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)").run();
+      if (mode === 'readwrite') {
+        this.db.prepare("INSERT INTO plugin_meta VALUES('revision','1') ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)").run();
+        for (const name of writeStores.filter(name => BACKUP_STORES.includes(name))) this.db.prepare("INSERT INTO plugin_meta VALUES(?,'1') ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)").run(backupVersionKey(name));
+      }
       this.db.exec('COMMIT');
       this.reportProgress?.({count:budget.rows},'operation-committed');
       return result;

@@ -2,7 +2,7 @@ export function failure(code, message, status = 503) {
   return Object.assign(new Error(message), { code, status });
 }
 export function safeError(error) {
-  if (['backup-conflict','backup-limit','backup-source-changed','backup-upgrade-required'].includes(error?.code)) return failure(error.code, error.message, 409);
+  if (['backup-conflict','backup-version-changed','backup-limit','backup-source-changed','backup-upgrade-required'].includes(error?.code)) return failure(error.code, error.message, 409);
   if (['transfer-conflict','source-changed','target-changed','source-baseline-incomplete'].includes(error?.code)) return failure(error.code, error.message, 409);
   if (error?.code === 'stale-cleanup-plan') return error;
   if (/^(批量清理|请先选择角色|请先勾选)/.test(error?.message || '')) return failure('cleanup-conflict', error.message, 409);

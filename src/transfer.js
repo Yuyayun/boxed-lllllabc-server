@@ -117,9 +117,9 @@ export function installTransfer(repository) {
       if (action === 'commit') {
         if (state?.phase === 'committed') return state;
         if (state?.role !== 'target' || state.phase !== 'verified' || state.baseRevision !== (meta('revision') || 0)) throw new Error('目标数据或校验阶段已变化。');
-        snapshot(id,'backup'); restore(id,'data'); put('revision',state.baseRevision+1); state.phase='committed'; save(id,state); return state;
+        snapshot(id,'backup'); restore(id,'data'); put('revision',state.baseRevision+1); put('backup-scope-epoch',(meta('backup-scope-epoch')||0)+1); state.phase='committed'; save(id,state); return state;
       }
-      if (action === 'rollback' && state.role === 'target' && state.phase === 'committed') { restore(id,'backup'); put('revision',(meta('revision') || 0)+1); }
+      if (action === 'rollback' && state.role === 'target' && state.phase === 'committed') { restore(id,'backup'); put('revision',(meta('revision') || 0)+1); put('backup-scope-epoch',(meta('backup-scope-epoch')||0)+1); }
       if (action === 'finish' && state.role === 'target' && state.phase !== 'committed') throw new Error('目标尚未提交。');
       db.prepare('DELETE FROM transfer_rows WHERE id=?').run(id);
       db.prepare("DELETE FROM plugin_meta WHERE key='transfer-lock'").run();

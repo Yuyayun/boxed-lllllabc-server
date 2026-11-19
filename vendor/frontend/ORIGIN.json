@@ -1,8 +1,11 @@
 {
   "repository": "https://github.com/Yuyayun/boxed-lllllabc",
-  "revision": "02873a4d8c69197aeacfaf15a944bd2f7da30d58",
+  "revision": "ff6005e79773ee192a9b1e1b716d0f11ea67a53f",
   "licenseRevision": "2bde1b8976b0a82e00f6f0d4c2b8b53a123ca5d3",
-  "note": "Exact source copies from revision; LICENSE is synchronized separately from licenseRevision. Maintain these transaction/protection modules together with the frontend. Preserve vendor/frontend/LICENSE.",
+  "note": "Source modules are synchronized from revision, except the intentional differences listed below. LICENSE is synchronized separately from licenseRevision. Maintain these transaction/protection modules together with the frontend. Preserve vendor/frontend/LICENSE.",
+  "intentionalDifferences": [
+    "src/storage/runtime-log-format.js retains server UTC console formatting; frontend uses the device local timezone."
+  ],
   "files": [
     "src/storage/operations.js",
     "src/storage/catalog-reader.js",
@@ -30,6 +33,7 @@
     "src/storage/legacy-recovery.js",
     "src/storage/runtime-log-format.js",
     "src/storage/backup-batches.js",
+    "src/storage/backup-versions.js",
     "src/storage/backup-catalog-summary.js",
     "src/storage/large-backup-operations.js"
   ],

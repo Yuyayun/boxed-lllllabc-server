@@ -1,4 +1,5 @@
 import { encodeStorageValue } from './protocol.js';
+import { fullWriteGuard, sameBackupVersion, isBackupVersionConflict } from './backup-versions.js';
 
 export const BACKUP_STORES = Object.freeze(['recent_messages', 'full_messages', 'historical_changes', 'pending_changes']);
 export const BACKUP_BUDGET = Object.freeze({ rows: 50, bytes: 1024 * 1024, nodes: 50000 });
@@ -29,20 +30,56 @@ export function checkBackupBatch(rows) {
 }
 export function boundedRecordSize(row) { const size = measureBackupValue(row); return { ...size, fits: size.bytes <= 8 * 1024 * 1024 - 4096 && size.nodes <= 198000 }; }
 
-export async function readBackupRecords(session, chatKey, store, { hashesOnly = false, summary } = {}) {
+export function backupVersionOptions(summary, store, writing = false) {
+  return { revision: summary.revision, ...(summary.scopes?.[store] ? { scope: summary.scopes[store], ...(writing && store === 'full_messages' ? { fullGuard: fullWriteGuard(summary.meta) } : {}) } : {}) };
+}
+function unchangedBackup(summary, latest, stores) {
+  return stores.every(store => summary.counts[store] === latest.counts[store]
+    && (summary.scopes?.[store] && latest.scopes?.[store] ? sameBackupVersion(summary.scopes[store], latest.scopes[store]) : summary.revision === latest.revision));
+}
+export async function readBackupRecords(session, chatKey, store, { hashesOnly = false, summary, retries = 2 } = {}) {
   if (!session.capabilities?.boundedBackup) {
     const old = { full_messages: 'getFullMessages', recent_messages: 'getRecentMessages', historical_changes: 'getHistoricalChanges', pending_changes: 'getPendingChanges' }[store];
     return session[old](chatKey);
   }
-  const state = summary ?? await session.getBackupSummary(chatKey);
-  const rows = []; let after = null;
-  do {
-    const page = await session.getBackupPage({ chatKey, store, after, revision: state.revision, hashesOnly });
-    rows.push(...page.rows); after = page.after;
-  } while (after !== null);
-  const latest = await session.getBackupSummary(chatKey);
-  if (latest.revision !== state.revision || rows.length !== state.counts[store]) throw backupFailure('备份在读取期间发生变化，请重新读取。');
-  return rows.sort((a, b) => (a.messageIndex ?? Infinity) - (b.messageIndex ?? Infinity));
+  let state = summary ?? await session.getBackupSummary(chatKey);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const rows = []; let after = null;
+      do {
+        const page = await session.getBackupPage({ chatKey, store, after, ...backupVersionOptions(state, store), hashesOnly });
+        rows.push(...page.rows); after = page.after;
+      } while (after !== null);
+      const latest = await session.getBackupSummary(chatKey);
+      if (!unchangedBackup(state, latest, [store]) || rows.length !== state.counts[store]) throw backupFailure('备份正在变化，请稍后重新读取。', 'backup-version-changed');
+      return rows.sort((a, b) => (a.messageIndex ?? Infinity) - (b.messageIndex ?? Infinity));
+    } catch (error) {
+      if (attempt >= retries || ![ 'backup-version-changed', 'backup-conflict' ].includes(error?.code)) throw error;
+      const fresh = await session.getBackupSummary(chatKey);
+      // Old servers use backup-conflict for damaged records too. Retry only
+      // when a new summary demonstrates that a version actually changed.
+      if (!isBackupVersionConflict(error) && unchangedBackup(state, fresh, [store])) throw error;
+      state = fresh;
+    }
+  }
+}
+
+export async function readBackupBundle(session, chatKey, stores, { summary, retries = 2 } = {}) {
+  let state = summary ?? await session.getBackupSummary(chatKey);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const records = {};
+      for (const store of stores) records[store] = await readBackupRecords(session, chatKey, store, { summary: state, retries: 0 });
+      const latest = await session.getBackupSummary(chatKey);
+      if (!unchangedBackup(state, latest, stores) || fullWriteGuard(state.meta) !== fullWriteGuard(latest.meta)) throw backupFailure('备份正在变化，请稍后重试。', 'backup-version-changed');
+      return { records, summary: latest };
+    } catch (error) {
+      if (attempt >= retries || !['backup-version-changed', 'backup-conflict'].includes(error?.code)) throw error;
+      const fresh = await session.getBackupSummary(chatKey);
+      if (!isBackupVersionConflict(error) && unchangedBackup(state, fresh, stores)) throw error;
+      state = fresh;
+    }
+  }
 }
 
 export async function writeBackupRecords(session, { chatKey, store, rows, meta = {}, replace = false, summary, sourceUnchanged = () => true, validateSource = sourceUnchanged, mapRow }) {
@@ -61,10 +98,10 @@ export async function writeBackupRecords(session, { chatKey, store, rows, meta =
   const state = summary ?? await session.getBackupSummary(chatKey);
   if (!replace && second.done && !first.done) {
     if (!sourceUnchanged() || !validateSource()) throw backupFailure('来源聊天已经变化，已有备份已保留。', 'backup-source-changed');
-    try { return await session.applyBackupPatch({ chatKey, store, rows: first.value, meta, revision: state.revision }); }
+    try { return await session.applyBackupPatch({ chatKey, store, rows: first.value, meta, ...backupVersionOptions(state, store, true) }); }
     catch (error) { if (error instanceof TypeError || ['AbortError','TimeoutError'].includes(error.name)) throw backupFailure('备份仍保持完整，本次更新结果待核对。', 'outcome-unknown'); throw error; }
   }
-  const job = await session.beginBackupWrite({ chatKey, store, count: rows.length, revision: state.revision, replace, meta });
+  const job = await session.beginBackupWrite({ chatKey, store, count: rows.length, ...backupVersionOptions(state, store, true), replace, meta });
   let committing = false;
   try {
     let start = 0;

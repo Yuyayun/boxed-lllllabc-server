@@ -48,6 +48,7 @@ async function seal(target,summary) {
 test('真实数据库清点、清理、搬运、读回及最终验收全部分批，回执重开可读，轻量提交不再搬正文',async t=>{
   const f=fixture(t);let source=f.open('source'),target=f.open('target');await seed(source,12);
   await target.execute('putChatMeta',[{chatKey:'old-target',keep:true}]);
+  const oldScope = (await target.execute('getBackupSummary', ['old-target'])).scopes.full_messages;
   const beforeSource=raw(source),beforeTarget=raw(target);
   for(let i=0;i<5;i++)target.db.prepare('INSERT INTO records_next VALUES(?,?,?,?)').run('chat_meta',JSON.stringify('stale-'+i),'stale-'+i,encode({chatKey:'stale-'+i}));
   await source.batchTransfer.begin({...args,role:'source'});await target.batchTransfer.begin({...args,role:'target'});
@@ -68,6 +69,12 @@ test('真实数据库清点、清理、搬运、读回及最终验收全部分�
   for(const table of ['records','records_next'])for(const action of ['INSERT','UPDATE','DELETE'])target.db.exec(`CREATE TEMP TRIGGER no_${table}_${action} BEFORE ${action} ON ${table} BEGIN SELECT RAISE(ABORT,'commit-copies-payload');END`);
   target.changeDataset('commit',args.id,summary);assert.equal(target.activeDataset(),1);
   assert.equal(receipt(target,'transfer:'+args.id).verified,13);
+  assert.equal(receipt(target,'backup-scope-epoch'), oldScope.epoch + 1);
+  target.changeDataset('commit',args.id,summary);
+  assert.equal(receipt(target,'backup-scope-epoch'), oldScope.epoch + 1, '重复提交不能重复推进正文代次');
+  target.changeDataset('rollback',args.id);
+  assert.equal(target.activeDataset(), oldScope.area);
+  assert.equal(receipt(target,'backup-scope-epoch'), oldScope.epoch + 2, '切回原数据区后旧正文凭据仍必须失效');
 });
 
 test('实际读回发现篡改或丢失时不确认批次，重复写入不修补或覆盖被修改的数据',async t=>{

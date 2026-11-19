@@ -40,13 +40,14 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
     return {
       ...(previousMeta ?? {}),
       ...(recentMeta ?? {}),
+      ...(Object.hasOwn(previousMeta ?? {}, 'fullBackupChatHash') || Object.hasOwn(recentMeta ?? {}, 'fullBackupChatHash') ? { fullBackupChatHash: previousMeta?.fullBackupChatHash ?? null } : {}),
       chatKey: recentMeta?.chatKey ?? previousMeta?.chatKey,
     };
   }
 
   async function putChatMeta(db, meta) {
     return runTransaction(db, [STORES.chatMeta], "readwrite", async (stores) => {
-      await requestToPromise(stores.get(STORES.chatMeta).put(meta));
+      await requestToPromise(stores.get(STORES.chatMeta).put({ ...meta, ...(Object.hasOwn(meta, 'fullBackupChatHash') ? { fullBackupChatHash: null } : {}) }));
     });
   }
 
@@ -85,9 +86,8 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
         await requestToPromise(messageStore.put({ ...message, chatKey }));
       }
 
-      if (meta) {
-        await requestToPromise(stores.get(STORES.chatMeta).put(meta));
-      }
+      const previousMeta = await requestToPromise(stores.get(STORES.chatMeta).get(chatKey));
+      if (meta || previousMeta) await requestToPromise(stores.get(STORES.chatMeta).put({ ...previousMeta, ...meta, fullBackupChatHash: null, chatKey }));
     });
   }
 
@@ -119,9 +119,8 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
         await requestToPromise(messageStore.put({ ...message, chatKey }));
       }
 
-      if (meta) {
-        await requestToPromise(stores.get(STORES.chatMeta).put(meta));
-      }
+      const previousMeta = await requestToPromise(stores.get(STORES.chatMeta).get(chatKey));
+      if (meta || previousMeta) await requestToPromise(stores.get(STORES.chatMeta).put({ ...previousMeta, ...meta, fullBackupChatHash: null, chatKey }));
     });
   }
 
@@ -554,7 +553,9 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
       return [];
     }
 
-    return runTransaction(db, [STORES.pendingChanges], "readwrite", async (stores) => {
+    const proofStores = [STORES.pendingChanges, ...new Set(safeRecords.flatMap(record => (record.backupTargets ?? []).filter(name => [STORES.fullMessages, STORES.historicalChanges, STORES.recentMessages].includes(name))))];
+    if (safeRecords.some(record => record.backupTargets?.includes(STORES.recentMessages) || record.backupTargets?.includes(STORES.fullMessages) && !Number.isInteger(record.messageIndex))) proofStores.push(STORES.chatMeta);
+    return runTransaction(db, proofStores, "readwrite", async (stores) => {
       const store = stores.get(STORES.pendingChanges);
       const deletedIds = [];
       for (const expected of safeRecords) {
@@ -563,11 +564,26 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
           || pendingDeletionFingerprint(current) !== pendingDeletionFingerprint(expected)) {
           continue;
         }
+        let backedUp = true;
+        for (const target of current.backupTargets ?? []) {
+          if (![STORES.fullMessages, STORES.historicalChanges, STORES.recentMessages].includes(target)) { backedUp = false; break; }
+          if (Number.isInteger(current.messageIndex)) {
+            const copy = await requestToPromise(stores.get(target).get([current.chatKey, current.messageIndex]));
+            if ((target === STORES.historicalChanges ? copy?.message : copy)?.canonicalHash !== current.canonicalHash) {
+              const meta = target === STORES.recentMessages ? await requestToPromise(stores.get(STORES.chatMeta).get(current.chatKey)) : null;
+              if (!(Number.isInteger(meta?.recentFirstIndex) && current.messageIndex < meta.recentFirstIndex)) backedUp = false;
+            }
+          } else {
+            const meta = await requestToPromise(stores.get(STORES.chatMeta).get(current.chatKey));
+            if (target !== STORES.fullMessages || meta?.fullBackupChatHash !== (expected.verifiedFullChatHash ?? current.canonicalChatHash)) backedUp = false;
+          }
+        }
+        if (!backedUp || !shouldDelete()) continue;
         await requestToPromise(store.delete(expected.id));
         deletedIds.push(expected.id);
       }
       return deletedIds;
-    });
+    }, { writeStores: [STORES.pendingChanges] });
   }
 
   function pendingDeletionFingerprint(record) {
@@ -585,6 +601,7 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
       chatLength: Number.isInteger(record.chatLength) ? record.chatLength : null,
       createdAt: record.createdAt ?? "",
       updatedAt: record.updatedAt ?? "",
+      backupTargets: record.backupTargets ?? [],
       ...(record.snapshotSaveProof ? { snapshotSaveProof: record.snapshotSaveProof } : {}),
     });
   }
@@ -596,6 +613,7 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
       await requestToPromise(store.put({
         ...(current ?? { chatKey }),
         ...patch,
+        ...(Object.hasOwn(patch, 'fullBackupChatHash') ? { fullBackupChatHash: null } : {}),
         chatKey,
       }));
     });

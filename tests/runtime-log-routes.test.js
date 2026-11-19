@@ -28,7 +28,7 @@ test('前端已记录进度时后端不重复记录；失联回退仍五秒限�
   let now=1000000;const actualNow=Date.now;Date.now=()=>now;t.after(()=>{Date.now=actualNow;});
   const worker={call:async()=>({writable:true,batchTransfer:3}),close:async()=>{}};
   const f=await routeFixture(t,{createWorker:()=>worker}),event={taskId:'shared-progress-task',from:'indexeddb',to:'sqlite',kind:'switch'};
-  await f.call('/logs/event',{protocol:STORAGE_PROTOCOL,...event,stage:'registered'});const status=await f.call('/status');assert.equal(status.pluginVersion,'1.0.2');
+  await f.call('/logs/event',{protocol:STORAGE_PROTOCOL,...event,stage:'registered'});const status=await f.call('/status');assert.equal(status.pluginVersion,'1.0.3');
   const send=()=>worker.observe({...event,stage:'progress',operation:'verifyBatch',count:1});
   now+=4000;send();assert.equal((await f.call('/logs?category=all')).value.entries.filter(row=>row.stage==='progress').length,0);
   now+=7000;send();now+=1000;send();now+=4000;send();

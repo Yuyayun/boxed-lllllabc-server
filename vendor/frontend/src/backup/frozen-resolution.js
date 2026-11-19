@@ -82,6 +82,7 @@ export function buildResolvedFullBackupMeta({
   const base = {
     ...(currentMeta ?? {}),
     ...(identityMeta ?? {}),
+    ...(Object.hasOwn(currentMeta ?? {}, 'fullBackupChatHash') ? { fullBackupChatHash: null } : {}),
     chatKey: identityMeta?.chatKey ?? currentMeta?.chatKey,
   };
 

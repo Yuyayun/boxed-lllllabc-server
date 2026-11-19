@@ -2,7 +2,9 @@
 
 为[箱装辣白菜前端扩展](https://github.com/Yuyayun/boxed-lllllabc)提供可选的服务器备份存储（SQLite）。前后端分仓库、分别安装。
 
-**当前正式版：1.0.2** · [正式版下载](https://github.com/Yuyayun/boxed-lllllabc-server/releases/tag/v1.0.2)。配合前端 1.0.2 使用完整的超大聊天修复能力，旧前端接口继续保留。
+**当前分支版本：1.0.3**（开发分支 `codex/1.0.3-backup-race`，尚未发布）。配合前端 1.0.3 修复旧楼层修改漏补及保存确认时的并发冲突；前后端需一并更新，无需清库或重新迁移备份。
+
+**最新正式版：1.0.2** · [正式版下载](https://github.com/Yuyayun/boxed-lllllabc-server/releases/tag/v1.0.2)。下方正式版安装入口继续指向已发布版本，旧前端接口继续保留。
 
 只安装前端即可使用浏览器本地备份。安装本插件后，不会自动切换位置或迁移数据；需要使用服务器存储时，再到前端确认切换。
 
@@ -103,7 +105,7 @@ Git 安装可在插件目录执行 `git pull --ff-only` 更新当前分支；ZIP
 
 本机已完成约 479 MB 级和超过 1 GiB 数据的双向迁移、重启、旧版数据升级，以及两个酒馆版本的原生操作检查。Termux 实机、真实手机键盘和 Safari 等仍需对应环境验收。
 
-[更新日志](CHANGELOG.md) 面向使用者；最新调整见[整改与实测对照](docs/acceptance/1.0.1-remediation-report.md)，此前测试见[本机验收记录](docs/acceptance/1.0.1-desktop-acceptance.md)，[docs/acceptance](docs/acceptance/README.md) 保留历次阶段记录。
+[更新日志](CHANGELOG.md) 面向使用者；本分支调整见[1.0.3 备份竞态修复验收](docs/acceptance/2026-11-19-backup-race-fix.md)，此前调整见[整改与实测对照](docs/acceptance/1.0.1-remediation-report.md)，[docs/acceptance](docs/acceptance/README.md) 保留历次阶段记录。
 
 作者：**辣白菜 / labaicai0969**。
 
