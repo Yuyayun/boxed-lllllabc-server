@@ -71,7 +71,7 @@ export async function readBackupBundle(session, chatKey, stores, { summary, retr
       const records = {};
       for (const store of stores) records[store] = await readBackupRecords(session, chatKey, store, { summary: state, retries: 0 });
       const latest = await session.getBackupSummary(chatKey);
-      if (!unchangedBackup(state, latest, stores) || fullWriteGuard(state.meta) !== fullWriteGuard(latest.meta)) throw backupFailure('备份正在变化，请稍后重试。', 'backup-version-changed');
+      if (!unchangedBackup(state, latest, stores) || (stores.includes('full_messages') && fullWriteGuard(state.meta) !== fullWriteGuard(latest.meta))) throw backupFailure('备份正在变化，请稍后重试。', 'backup-version-changed');
       return { records, summary: latest };
     } catch (error) {
       if (attempt >= retries || !['backup-version-changed', 'backup-conflict'].includes(error?.code)) throw error;

@@ -11,7 +11,30 @@ const validStore = store => assert(BACKUP_STORES.includes(store), '备份类型�
 const jobKey = id => { assert(typeof id === 'string' && /^[a-zA-Z0-9_-]{8,80}$/.test(id), '备份任务标识无效。'); return 'backup-write:' + id; };
 const relevantMeta = (store, meta = {}) => Object.fromEntries(Object.entries(meta).filter(([key]) => store === 'full_messages' ? key.startsWith('fullBackup') : store === 'recent_messages' ? ['lastSeenAt','lastBackupAt','messageCount','recentCount','recentFirstIndex','recentLastIndex','lastReason'].includes(key) : store === 'historical_changes' ? ['historicalCount','historicalUpdatedAt'].includes(key) : key.startsWith('pending')));
 export function createLargeBackupOperations(driver) {
-  const transaction = (mode, callback) => driver.transaction(mode, async tx => { await tx.checkLock(); return callback(tx); });
+  const transaction = (mode, callback) => driver.transaction(mode, async tx => {
+    await tx.checkLock();
+    if (mode !== 'readwrite') return callback(tx);
+    const changedStores = new Set();
+    const mutations = { ...tx,
+      async put(store, value) {
+        const result = await tx.put(store, value);
+        if (BACKUP_STORES.includes(store)) changedStores.add(store);
+        return result;
+      },
+      async deleteChat(store, chatKey) {
+        const count = await tx.deleteChat(store, chatKey);
+        if (count > 0 && BACKUP_STORES.includes(store)) changedStores.add(store);
+        return count;
+      },
+    };
+    const result = await callback(mutations);
+    // Publish versions with the records and receipt in the same transaction.
+    for (const store of changedStores) {
+      const key = backupVersionKey(store);
+      await tx.metaPut(key, (await tx.metaGet(key) ?? 0) + 1);
+    }
+    return result;
+  });
   const scope = async (tx, store) => ({ area: await tx.area(), epoch: await tx.metaGet(BACKUP_EPOCH_KEY) ?? 0, revision: await tx.metaGet(backupVersionKey(store)) ?? 0 });
   const versionFailure = () => { throw backupFailure('正式备份在操作期间发生变化，已有数据已保留。', 'backup-version-changed'); };
   const revisionMatches = async (tx, expected) => { if (expected !== await tx.revision()) versionFailure(); };
@@ -21,7 +44,6 @@ export function createLargeBackupOperations(driver) {
       if (writing && options.store === 'full_messages' && options.fullGuard !== fullWriteGuard(await tx.get('chat_meta', options.chatKey))) versionFailure();
     } else await revisionMatches(tx, options.revision);
   };
-  const bumpStore = async (tx, store) => tx.metaPut(backupVersionKey(store), (await tx.metaGet(backupVersionKey(store)) ?? 0) + 1);
   return {
     cleanupBackupWrites: () => transaction('readwrite', async tx => {
       for (const job of await tx.jobs()) {
@@ -45,7 +67,7 @@ export function createLargeBackupOperations(driver) {
       const previous = await tx.get('chat_meta', chatKey) ?? { chatKey };
       const counts = await tx.counts(chatKey);
       await tx.put('chat_meta', { ...previous, ...(store === 'full_messages' ? { fullBackupChatHash: null } : {}), ...relevantMeta(store, meta), ...(store === 'historical_changes' ? { historicalCount: counts.historical_changes, historicalUpdatedAt: new Date().toISOString() } : {}), chatKey });
-      await bumpStore(tx, store); await tx.bumpRevision(); return { state: 'committed', committedRevision: await tx.revision() };
+      await tx.bumpRevision(); return { state: 'committed', committedRevision: await tx.revision() };
     }),
     getBackupSummary: chatKey => transaction('readonly', async tx => ({ meta: await tx.get('chat_meta', chatKey), counts: await tx.counts(chatKey), revision: await tx.revision(), scopes: Object.fromEntries(await Promise.all(BACKUP_STORES.map(async store => [store, await scope(tx, store)]))) })),
     getBackupPage: options => transaction('readonly', async tx => {
@@ -90,7 +112,7 @@ export function createLargeBackupOperations(driver) {
       const meta = await tx.get('chat_meta', job.chatKey) ?? { chatKey: job.chatKey };
       const counts = await tx.counts(job.chatKey);
       await tx.put('chat_meta', { ...meta, ...(job.store === 'full_messages' ? { fullBackupChatHash: null } : {}), ...job.meta, ...(job.store === 'historical_changes' ? { historicalCount: counts.historical_changes, historicalUpdatedAt: new Date().toISOString() } : {}), chatKey: job.chatKey });
-      await bumpStore(tx, job.store); await tx.bumpRevision(); job.state = 'committed'; job.committedAt = new Date().toISOString(); job.committedRevision = await tx.revision();
+      await tx.bumpRevision(); job.state = 'committed'; job.committedAt = new Date().toISOString(); job.committedRevision = await tx.revision();
       await tx.metaPut(jobKey(id), job); await tx.stageDelete(id); return job;
     }),
     getBackupWriteStatus: id => transaction('readonly', tx => tx.metaGet(jobKey(id))),
@@ -106,7 +128,7 @@ export function createLargeBackupOperations(driver) {
       const counts = await tx.counts(chatKey); await tx.deleteChat(store, chatKey);
       const type = { full_messages: 'full', recent_messages: 'recent', historical_changes: 'historical' }[store];
       if (meta) await tx.put('chat_meta', { ...meta, ...buildCleanupMetaPatch(type) });
-      await bumpStore(tx, store); await tx.bumpRevision(); return { deletedCount: counts[store], chatKey };
+      await tx.bumpRevision(); return { deletedCount: counts[store], chatKey };
     }),
     deleteBackupBatchV2: ({ selection, revision, mode, confirmed }) => transaction('readwrite', async tx => {
       assert(confirmed === true && mode === driver.mode, '批量清理必须确认当前备份位置。'); await revisionMatches(tx, revision);
@@ -117,7 +139,6 @@ export function createLargeBackupOperations(driver) {
       const stores = { full: 'full_messages', recent: 'recent_messages', historical: 'historical_changes' };
       for (const action of plan.actions) {
         await tx.deleteChat(stores[action.type], action.chatKey);
-        await bumpStore(tx, stores[action.type]);
         const meta = await tx.get('chat_meta', action.chatKey);
         if (meta) await tx.put('chat_meta', { ...meta, ...buildCleanupMetaPatch(action.type) });
       }

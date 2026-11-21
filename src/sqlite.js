@@ -128,7 +128,7 @@ export class SqliteRepository {
       put('transfer:'+id,result);this.checkCancelled();this.db.exec('COMMIT');return result;
     }catch(error){this.rollback(error);}
   }
-  store(name, budget) {
+  store(name, budget, onMutation = () => {}) {
     if (!STORES.includes(name)) throw failure('invalid-request', '无效记录类型。', 400);
     const mutationStatement = sql => {
       const key = this.activeDataset() + ':' + sql;
@@ -162,7 +162,11 @@ export class SqliteRepository {
       get: (key) => read('SELECT payload FROM records WHERE store=? AND primary_key=?', [name, JSON.stringify(key)])[0],
       getForMutation: key => { const row = this.prepare('SELECT payload FROM records WHERE store=? AND primary_key=?').get(name, JSON.stringify(key)); return row && decodeStorageValue(JSON.parse(row.payload)); },
       countForChat: key => this.prepare('SELECT count(*) AS n FROM records WHERE store=? AND chat_key=?').get(name, key).n,
-      deleteForChat: key => this.prepare('DELETE FROM records WHERE store=? AND chat_key=?').run(name, key),
+      deleteForChat: key => {
+        const result = this.prepare('DELETE FROM records WHERE store=? AND chat_key=?').run(name, key);
+        if (result.changes > 0) onMutation();
+        return result;
+      },
       verifySnapshotKeys: (key, expected) => { const row = this.prepare("SELECT count(*) AS n,min(CAST(json_extract(primary_key,'$[1]') AS INTEGER)) AS first,max(CAST(json_extract(primary_key,'$[1]') AS INTEGER)) AS last FROM records WHERE store=? AND chat_key=?").get(name, key); return row.n === expected && row.first === 0 && row.last === expected - 1; },
       eachForChat: async (key, callback) => {
         let after = '';
@@ -208,9 +212,14 @@ export class SqliteRepository {
         const payload = JSON.stringify(encodeStorageValue(record));
         if (Buffer.byteLength(payload) > 8 * 1024 * 1024) throw failure('too-large', '单条备份超过 8 MiB，未写入。', 413);
         this.prepare('INSERT INTO records(store,primary_key,chat_key,payload) VALUES(?,?,?,?) ON CONFLICT(store,primary_key) DO UPDATE SET chat_key=excluded.chat_key,payload=excluded.payload').run(name, JSON.stringify(key), storageKey, payload);
+        onMutation();
         return key;
       },
-      delete: (key) => this.prepare('DELETE FROM records WHERE store=? AND primary_key=?').run(name, JSON.stringify(key)),
+      delete: (key) => {
+        const result = this.prepare('DELETE FROM records WHERE store=? AND primary_key=?').run(name, JSON.stringify(key));
+        if (result.changes > 0) onMutation();
+        return result;
+      },
       index: (indexName) => {
         if (indexName !== 'by_chat' && !(name==='snapshot_messages'&&indexName==='by_snapshot')) throw failure('invalid-request', '索引无效。', 400);
         return {
@@ -220,17 +229,18 @@ export class SqliteRepository {
       },
     };
   }
-  async transaction(_db, names, mode, callback, { writeStores = names } = {}) {
+  async transaction(_db, names, mode, callback) {
     this.checkCancelled();
     this.db.exec(mode === 'readwrite' ? 'BEGIN IMMEDIATE' : 'BEGIN');
     try {
       if (this.db.prepare("SELECT value FROM plugin_meta WHERE key='transfer-lock'").get()) throw failure('transfer-locked', '存在未完成的切换任务，备份读写已暂停。', 409);
       const budget = { rows: 0, bytes: 0 };
-      const result = await callback(new Map(names.map((name) => [name, this.store(name, budget)])));
+      const changedStores = new Set();
+      const result = await callback(new Map(names.map((name) => [name, this.store(name, budget, () => { if (BACKUP_STORES.includes(name)) changedStores.add(name); })])));
       this.checkCancelled();
       if (mode === 'readwrite') {
         this.db.prepare("INSERT INTO plugin_meta VALUES('revision','1') ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)").run();
-        for (const name of writeStores.filter(name => BACKUP_STORES.includes(name))) this.db.prepare("INSERT INTO plugin_meta VALUES(?,'1') ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)").run(backupVersionKey(name));
+        for (const name of changedStores) this.db.prepare("INSERT INTO plugin_meta VALUES(?,'1') ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)").run(backupVersionKey(name));
       }
       this.db.exec('COMMIT');
       this.reportProgress?.({count:budget.rows},'operation-committed');

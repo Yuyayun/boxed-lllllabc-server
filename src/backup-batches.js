@@ -31,7 +31,7 @@ export function createSqliteBackupBatches(repo) {
           get: (store, key) => { const row = statement(`SELECT payload FROM ${table} WHERE store=? AND primary_key=?`).get(store, JSON.stringify(key)); return row ? decode(row.payload) : undefined; },
           put: (store, value) => repo.store(store, { rows: 0, bytes: 0 }).put(value),
           counts: chatKey => { const rows = stats(chatKey); return Object.fromEntries(BACKUP_STORES.map(store => [store, rows[store]?.count ?? 0])); },
-          deleteChat: (store, chatKey) => statement(`DELETE FROM ${table} WHERE store=? AND chat_key=?`).run(store, chatKey),
+          deleteChat: (store, chatKey) => statement(`DELETE FROM ${table} WHERE store=? AND chat_key=?`).run(store, chatKey).changes,
           page(store, chatKey, after, hashesOnly) {
             const rows = []; let bytes = 1024, nodes = 100, cursor = null, more = false;
             for (const item of statement(`SELECT primary_key,payload FROM ${table} WHERE store=? AND chat_key=? AND primary_key>? ORDER BY primary_key LIMIT ?`).iterate(store, chatKey, after ?? '', BACKUP_BUDGET.rows + 1)) {

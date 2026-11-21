@@ -583,7 +583,7 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
         deletedIds.push(expected.id);
       }
       return deletedIds;
-    }, { writeStores: [STORES.pendingChanges] });
+    });
   }
 
   function pendingDeletionFingerprint(record) {
