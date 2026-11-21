@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/Yuyayun/boxed-lllllabc",
-  "revision": "cef2f19317aae4a640a40510fa5cec86a3eb008f",
+  "revision": "a84fd73b80fa0706768843e97902a937045bc247",
   "licenseRevision": "2bde1b8976b0a82e00f6f0d4c2b8b53a123ca5d3",
   "note": "Source modules are synchronized from revision. Server console formatting selects UTC explicitly; the browser defaults to its local timezone. LICENSE is synchronized separately from licenseRevision. Maintain these modules together with the frontend. Preserve vendor/frontend/LICENSE.",
   "intentionalDifferences": [],
