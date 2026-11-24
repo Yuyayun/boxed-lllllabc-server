@@ -3,13 +3,28 @@ import { createBatchCleanupPlan } from '../backup/batch-cleanup.js';
 import { buildCleanupMetaPatch } from '../backup/cleanup.js';
 import { summarizeBackupCatalog } from '../backup/catalog.js';
 import { stableText } from './value-digest.js';
+import { newOperationId } from '../backup/pending-journal.js';
 import { backupVersionKey, BACKUP_EPOCH_KEY, fullWriteGuard, sameBackupVersion } from './backup-versions.js';
 
 export const LARGE_BACKUP_OPERATIONS = Object.freeze(['getBackupSummary', 'getBackupPage', 'getBackupCatalogPage', 'beginBackupWrite', 'appendBackupWrite', 'commitBackupWrite', 'abortBackupWrite', 'getBackupWriteStatus', 'deleteBackupV2', 'applyBackupPatch', 'deleteBackupBatchV2', 'cleanupBackupWrites']);
 const assert = (value, text) => { if (!value) throw backupFailure(text); };
 const validStore = store => assert(BACKUP_STORES.includes(store), '备份类型无效。');
 const jobKey = id => { assert(typeof id === 'string' && /^[a-zA-Z0-9_-]{8,80}$/.test(id), '备份任务标识无效。'); return 'backup-write:' + id; };
-const relevantMeta = (store, meta = {}) => Object.fromEntries(Object.entries(meta).filter(([key]) => store === 'full_messages' ? key.startsWith('fullBackup') : store === 'recent_messages' ? ['lastSeenAt','lastBackupAt','messageCount','recentCount','recentFirstIndex','recentLastIndex','lastReason'].includes(key) : store === 'historical_changes' ? ['historicalCount','historicalUpdatedAt'].includes(key) : key.startsWith('pending')));
+const relevantMeta = (store, meta = {}) => Object.fromEntries(Object.entries(meta).filter(([key]) => store === 'full_messages' ? key.startsWith('fullBackup') : store === 'recent_messages' ? ['lastSeenAt','lastBackupAt','messageCount','recentCount','recentFirstIndex','recentLastIndex','lastReason','recentNativeHash'].includes(key) : store === 'historical_changes' ? ['historicalCount','historicalUpdatedAt'].includes(key) : key.startsWith('pending')));
+function provenMeta(store,meta={},proof) {
+  const result=relevantMeta(store,meta),field=store==='full_messages'?'fullBackupNativeHash':store==='recent_messages'?'recentNativeHash':null;
+  if(field)result[field]=proof?.format===1&&proof.hash===meta[field]&&/^[a-f0-9]{64}$/.test(proof.hash)?proof.hash:null;
+  return result;
+}
+async function guardPendingReplacement(tx,chatKey,store,replace) {
+  if(store!=='pending_changes'||!replace)return;
+  let after=null;
+  do {
+    const page=await tx.page(store,chatKey,after,false);
+    if(page.rows.some(row=>row.pendingFormat))throw backupFailure('聊天已有新版保护记录，不能整批替换；请更新箱装前端扩展并重新预览恢复。','backup-client-upgrade-required');
+    after=page.after;
+  }while(after!==null);
+}
 export function createLargeBackupOperations(driver) {
   const transaction = (mode, callback) => driver.transaction(mode, async tx => {
     await tx.checkLock();
@@ -66,7 +81,7 @@ export function createLargeBackupOperations(driver) {
       }
       const previous = await tx.get('chat_meta', chatKey) ?? { chatKey };
       const counts = await tx.counts(chatKey);
-      await tx.put('chat_meta', { ...previous, ...(store === 'full_messages' ? { fullBackupChatHash: null } : {}), ...relevantMeta(store, meta), ...(store === 'historical_changes' ? { historicalCount: counts.historical_changes, historicalUpdatedAt: new Date().toISOString() } : {}), chatKey });
+      await tx.put('chat_meta', { ...previous, ...(store === 'full_messages' ? { fullBackupChatHash: null } : {}), ...provenMeta(store, meta,options.nativeProof), ...(store === 'historical_changes' ? { historicalCount: counts.historical_changes, historicalUpdatedAt: new Date().toISOString() } : {}), chatKey });
       await tx.bumpRevision(); return { state: 'committed', committedRevision: await tx.revision() };
     }),
     getBackupSummary: chatKey => transaction('readonly', async tx => ({ meta: await tx.get('chat_meta', chatKey), counts: await tx.counts(chatKey), revision: await tx.revision(), scopes: Object.fromEntries(await Promise.all(BACKUP_STORES.map(async store => [store, await scope(tx, store)]))) })),
@@ -80,7 +95,8 @@ export function createLargeBackupOperations(driver) {
       const { chatKey, store, count, revision, replace = true, meta } = options; validStore(store);
       assert(typeof chatKey === 'string' && chatKey && Number.isSafeInteger(count) && count >= 0, '备份暂存参数无效。');
       await matches(tx, options, true);
-      const id = globalThis.crypto.randomUUID(), job = { id, chatKey, store, count, replace, revision, scope: options.scope, fullGuard: options.fullGuard, area: await tx.area(), written: 0, state: 'draft', meta: relevantMeta(store, meta), createdAt: new Date().toISOString() };
+      await guardPendingReplacement(tx,chatKey,store,replace);
+      const id = newOperationId(), job = { id, chatKey, store, count, replace, revision, scope: options.scope, fullGuard: options.fullGuard, area: await tx.area(), written: 0, state: 'draft', meta: provenMeta(store, meta,options.nativeProof), createdAt: new Date().toISOString() };
       await tx.metaPut(jobKey(id), job); return job;
     }),
     appendBackupWrite: options => transaction('readwrite', async tx => {
@@ -103,6 +119,7 @@ export function createLargeBackupOperations(driver) {
       if (job.state === 'committed') return job;
       assert(job.state === 'draft' && job.written === job.count && await tx.stageCount(id) === job.count, '备份暂存尚未完整，不能提交。');
       await matches(tx, job, true); assert(await tx.area() === job.area, '备份位置发生变化，暂存未提交。');
+      await guardPendingReplacement(tx,job.chatKey,job.store,job.replace);
       if (job.replace) await tx.deleteChat(job.store, job.chatKey);
       let count = 0;
       await tx.eachStage(id, async value => { if (job.store === 'full_messages' && job.replace) assert(value.messageIndex === count, '完整备份楼层不连续。');

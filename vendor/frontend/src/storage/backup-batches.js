@@ -83,6 +83,7 @@ export async function readBackupBundle(session, chatKey, stores, { summary, retr
 }
 
 export async function writeBackupRecords(session, { chatKey, store, rows, meta = {}, replace = false, summary, sourceUnchanged = () => true, validateSource = sourceUnchanged, mapRow }) {
+  if(store==='pending_changes'&&rows.some(row=>row.pendingFormat)&&session.capabilities&&!session.capabilities.pendingJournal)throw backupFailure('服务器备份插件需要更新到支持新版未保存记录的版本，原记录已保留。','backup-upgrade-required');
   if (session.capabilities?.boundedBackup && session.cleanupBackupWrites) await session.cleanupBackupWrites();
   const iterator = iterateBackupBatches(rows, mapRow), first = iterator.next(), second = iterator.next();
   function* batches() { if (!first.done) yield first.value; if (!second.done) yield second.value; yield* iterator; }
@@ -96,12 +97,14 @@ export async function writeBackupRecords(session, { chatKey, store, rows, meta =
     return session[store === 'pending_changes' ? 'putPendingChanges' : 'putHistoricalChanges'](values);
   }
   const state = summary ?? await session.getBackupSummary(chatKey);
+  const proofHash=store==='full_messages'?meta.fullBackupNativeHash:store==='recent_messages'?meta.recentNativeHash:null;
+  const nativeProof=proofHash?{format:1,hash:proofHash}:undefined;
   if (!replace && second.done && !first.done) {
     if (!sourceUnchanged() || !validateSource()) throw backupFailure('来源聊天已经变化，已有备份已保留。', 'backup-source-changed');
-    try { return await session.applyBackupPatch({ chatKey, store, rows: first.value, meta, ...backupVersionOptions(state, store, true) }); }
+    try { return await session.applyBackupPatch({ chatKey, store, rows: first.value, meta, nativeProof,...backupVersionOptions(state, store, true) }); }
     catch (error) { if (error instanceof TypeError || ['AbortError','TimeoutError'].includes(error.name)) throw backupFailure('备份仍保持完整，本次更新结果待核对。', 'outcome-unknown'); throw error; }
   }
-  const job = await session.beginBackupWrite({ chatKey, store, count: rows.length, ...backupVersionOptions(state, store, true), replace, meta });
+  const job = await session.beginBackupWrite({ chatKey, store, count: rows.length, ...backupVersionOptions(state, store, true), replace, meta,nativeProof });
   let committing = false;
   try {
     let start = 0;

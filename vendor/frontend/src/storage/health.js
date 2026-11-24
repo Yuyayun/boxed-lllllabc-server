@@ -36,6 +36,10 @@ export function filterValidStoreRecords(records, storeName) {
 }
 
 export function describeStorageFailure(error) {
+  const errorCode=error?.storageErrorCode??error?.code;
+  if(['backup-client-upgrade-required','backup-database-blocked','backup-database-timeout'].includes(errorCode))return {
+    type:'compatibility',code:errorCode,shortText:errorCode==='backup-client-upgrade-required'?'前端扩展需要更新':'本地备份暂不可用',detail:error.detail??error.message,
+  };
   if (isQuotaExceededError(error)) {
     return {
       type: "quota",

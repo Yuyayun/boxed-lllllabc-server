@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/Yuyayun/boxed-lllllabc",
-  "revision": "2260cadd763d0ac142f4ae274919ec8840aefce8",
+  "revision": "c40ca2f97f198d856f3bf21ae7076d56b62ccf53",
   "licenseRevision": "2bde1b8976b0a82e00f6f0d4c2b8b53a123ca5d3",
   "note": "Source modules are synchronized from revision. Server console formatting selects UTC explicitly; the browser defaults to its local timezone. LICENSE is synchronized separately from licenseRevision. Maintain these modules together with the frontend. Preserve vendor/frontend/LICENSE.",
   "intentionalDifferences": [],
@@ -34,7 +34,9 @@
     "src/storage/backup-batches.js",
     "src/storage/backup-versions.js",
     "src/storage/backup-catalog-summary.js",
-    "src/storage/large-backup-operations.js"
+    "src/storage/large-backup-operations.js",
+    "src/backup/native-content.js",
+    "src/backup/pending-journal.js"
   ],
   "worktreeModified": false
 }

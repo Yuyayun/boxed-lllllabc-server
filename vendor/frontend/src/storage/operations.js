@@ -14,6 +14,8 @@ import {
   selectIdentityReconciliationSource,
 } from "../db/identity-reconciliation.js";
 import { filterValidStoreRecords, inspectBackupCatalogData } from "../storage/health.js";
+import { pendingRecordFingerprint, isJournalRecord } from '../backup/pending-journal.js';
+import { nativeMessageHash } from '../backup/native-content.js';
 
 
 // Shared transaction rules; adapters supply the transaction and request drivers.
@@ -40,6 +42,7 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
     return {
       ...(previousMeta ?? {}),
       ...(recentMeta ?? {}),
+      recentNativeHash: recentMeta?.recentNativeHash ?? null,
       ...(Object.hasOwn(previousMeta ?? {}, 'fullBackupChatHash') || Object.hasOwn(recentMeta ?? {}, 'fullBackupChatHash') ? { fullBackupChatHash: previousMeta?.fullBackupChatHash ?? null } : {}),
       chatKey: recentMeta?.chatKey ?? previousMeta?.chatKey,
     };
@@ -47,7 +50,7 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
 
   async function putChatMeta(db, meta) {
     return runTransaction(db, [STORES.chatMeta], "readwrite", async (stores) => {
-      await requestToPromise(stores.get(STORES.chatMeta).put({ ...meta, ...(Object.hasOwn(meta, 'fullBackupChatHash') ? { fullBackupChatHash: null } : {}) }));
+      await requestToPromise(stores.get(STORES.chatMeta).put({ ...meta, ...(Object.hasOwn(meta, 'fullBackupChatHash') ? { fullBackupChatHash: null } : {}),...(Object.hasOwn(meta,'fullBackupNativeHash')?{fullBackupNativeHash:null}:{}) }));
     });
   }
 
@@ -87,7 +90,7 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
       }
 
       const previousMeta = await requestToPromise(stores.get(STORES.chatMeta).get(chatKey));
-      if (meta || previousMeta) await requestToPromise(stores.get(STORES.chatMeta).put({ ...previousMeta, ...meta, fullBackupChatHash: null, chatKey }));
+      if (meta || previousMeta) await requestToPromise(stores.get(STORES.chatMeta).put({ ...previousMeta, ...meta, fullBackupChatHash: null,fullBackupNativeHash:null, chatKey }));
     });
   }
 
@@ -120,7 +123,7 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
       }
 
       const previousMeta = await requestToPromise(stores.get(STORES.chatMeta).get(chatKey));
-      if (meta || previousMeta) await requestToPromise(stores.get(STORES.chatMeta).put({ ...previousMeta, ...meta, fullBackupChatHash: null, chatKey }));
+      if (meta || previousMeta) await requestToPromise(stores.get(STORES.chatMeta).put({ ...previousMeta, ...meta, fullBackupChatHash: null,fullBackupNativeHash:null, chatKey }));
     });
   }
 
@@ -249,8 +252,9 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
       }
       for (const config of configurations) {
         const store = stores.get(config.store);
+        const pendingRekey=config.type==='pending'?createPendingRekeyer(targetKey,id=>requestToPromise((store.getForMutation??store.get).call(store,id))):null;
         await store.eachForChat(sourceKey, async record => {
-          const migrated = rekeyBackupRecord(record, targetKey, config.type);
+          const migrated = pendingRekey?await pendingRekey(record):rekeyBackupRecord(record, targetKey, config.type);
           const previous = allowTargetMerge ? await store.getForMutation(primaryKeyForRecord(migrated, config.type)) : undefined;
           const next = previous ? mergeRenamedBackupRecords({ type: config.type, sourceRecords: [record], targetRecords: [previous], targetKey })[0] : migrated;
           await requestToPromise(store.put(next)); await requestToPromise(store.delete(primaryKeyForRecord(record, config.type)));
@@ -272,9 +276,12 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
     }
 
     for (const { type, store, sourceRecords, targetRecords } of recordSets) {
+      const pendingRekey=type==='pending'?createPendingRekeyer(targetKey,id=>sourceRecords.find(row=>row.id===id)??targetRecords.find(row=>row.id===id)):null;
+      const prepared=[];
+      for(const record of sourceRecords)prepared.push(pendingRekey?await pendingRekey(record):record);
       const migratedRecords = allowTargetMerge
-        ? mergeRenamedBackupRecords({ type, sourceRecords, targetRecords, targetKey })
-        : sourceRecords.map((record) => rekeyBackupRecord(record, targetKey, type));
+        ? mergeRenamedBackupRecords({ type, sourceRecords:prepared, targetRecords, targetKey })
+        : prepared.map((record) => rekeyBackupRecord(record, targetKey, type));
       for (const record of migratedRecords) {
         await requestToPromise(store.put(record));
       }
@@ -298,6 +305,30 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
     }));
     await requestToPromise(metaStore.delete(sourceKey));
     return { ...selection, targetKey };
+  }
+
+  function createPendingRekeyer(targetKey,readRecord) {
+    const memo=new Map(),visiting=new Set();
+    const prepare=async record=>{
+      const migrated=rekeyBackupRecord(record,targetKey,'pending'),cached=memo.get(record.id);
+      if(cached){if(cached.references)migrated.supersedes=cached.references;return migrated;}
+      if(visiting.has(record.id))throw new Error('保护记录的关联关系异常，改名接续未完成，原备份已保留。');
+      visiting.add(record.id);
+      if(record.pendingFormat&&Array.isArray(record.supersedes)) {
+        for(let index=0;index<record.supersedes.length;index++) {
+          const original=record.supersedes[index];let proof=memo.get(original.id);
+          if(!proof) {
+            const referenced=await readRecord(original.id);
+            if(referenced&&pendingRecordFingerprint(referenced)===original.fingerprint){await prepare(referenced);proof=memo.get(original.id);}
+          }
+          if(proof?.originalHash===original.fingerprint)migrated.supersedes[index]={...migrated.supersedes[index],fingerprint:proof.targetHash};
+        }
+      }
+      visiting.delete(record.id);
+      memo.set(record.id,{originalHash:pendingRecordFingerprint(record),targetHash:pendingRecordFingerprint(migrated),references:migrated.supersedes});
+      return migrated;
+    };
+    return prepare;
   }
 
   function mergeRenamedBackupRecords({ type, sourceRecords, targetRecords, targetKey }) {
@@ -513,6 +544,9 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
     const safeRecords = Array.isArray(records) ? records : [];
     return runTransaction(db, [STORES.pendingChanges], "readwrite", async (stores) => {
       const store = stores.get(STORES.pendingChanges);
+      const guard=row=>{if(row.pendingFormat)throw Object.assign(new Error('聊天已有新版保护记录，不能整批替换；请更新箱装前端扩展并重新预览恢复。'),{code:'backup-client-upgrade-required'});};
+      if(store.eachForChat)await store.eachForChat(chatKey,guard);
+      else for(const row of await requestToPromise(store.index(INDEXES.pendingByChat).getAll(chatKey)))guard(row);
       await deleteMessagesForChat(store, INDEXES.pendingByChat, chatKey);
       for (const record of safeRecords) {
         await requestToPromise(store.put(record));
@@ -554,7 +588,8 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
     }
 
     const proofStores = [STORES.pendingChanges, ...new Set(safeRecords.flatMap(record => (record.backupTargets ?? []).filter(name => [STORES.fullMessages, STORES.historicalChanges, STORES.recentMessages].includes(name))))];
-    if (safeRecords.some(record => record.backupTargets?.includes(STORES.recentMessages) || record.backupTargets?.includes(STORES.fullMessages) && !Number.isInteger(record.messageIndex))) proofStores.push(STORES.chatMeta);
+    if(safeRecords.some(record=>record.verifiedSupersededBy)&&!proofStores.includes(STORES.historicalChanges))proofStores.push(STORES.historicalChanges);
+    if (safeRecords.some(record => record.pendingFormat || record.verifiedSupersededBy || record.backupTargets?.includes(STORES.recentMessages) || record.backupTargets?.includes(STORES.fullMessages) && !Number.isInteger(record.messageIndex))) proofStores.push(STORES.chatMeta);
     return runTransaction(db, proofStores, "readwrite", async (stores) => {
       const store = stores.get(STORES.pendingChanges);
       const deletedIds = [];
@@ -564,9 +599,42 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
           || pendingDeletionFingerprint(current) !== pendingDeletionFingerprint(expected)) {
           continue;
         }
+        const meta=(current.pendingFormat||expected.verifiedSupersededBy)?await requestToPromise(stores.get(STORES.chatMeta).get(current.chatKey)):null;
+        if(current.pendingFormat && (!isJournalRecord(current)||expected.verifiedRecordHash!==pendingRecordFingerprint(current)
+          || !/^[a-f0-9]{64}$/.test(expected.verifiedNativeHash??'')))continue;
+        if(current.pendingType==='operation') {
+          let dependenciesRemain=false;
+          for(const id of current.insertIds??[])if(await requestToPromise(store.get(id))){dependenciesRemain=true;break;}
+          if(!dependenciesRemain)for(const reference of current.supersedes??[]) {
+            const related=await requestToPromise(store.get(reference.id));
+            if(related&&pendingRecordFingerprint(related)===reference.fingerprint){dependenciesRemain=true;break;}
+          }
+          if(!dependenciesRemain)for(const reference of expected.verifiedDependencies??[]) {
+            const related=await requestToPromise(store.get(reference.id));
+            if(related&&pendingRecordFingerprint(related)===reference.fingerprint){dependenciesRemain=true;break;}
+          }
+          if(dependenciesRemain)continue;
+        }
+        let source;
+        if(expected.verifiedSupersededBy) {
+          source=await requestToPromise(store.get(expected.verifiedSupersededBy));
+          if(!source||source.pendingType!=='operation'||pendingRecordFingerprint(source)!==expected.verifiedSupersedingHash)continue;
+        }
         let backedUp = true;
-        for (const target of current.backupTargets ?? []) {
+        for (const target of new Set([...(current.backupTargets??[]),...(source?.backupTargets??[])])) {
           if (![STORES.fullMessages, STORES.historicalChanges, STORES.recentMessages].includes(target)) { backedUp = false; break; }
+          if(current.pendingFormat||source) {
+            if(target===STORES.fullMessages&&meta?.fullBackupNativeHash!==expected.verifiedNativeHash)backedUp=false;
+            if(target===STORES.recentMessages&&!recentProofMatches(meta,expected))backedUp=false;
+            if(target===STORES.historicalChanges) {
+              if(!Array.isArray(expected.verifiedHistoricalCopies))backedUp=false;
+              else for(const proof of [...expected.verifiedHistoricalCopies,...(expected.verifiedSupersedingHistoricalCopies??[])]) {
+                const copy=await requestToPromise(stores.get(target).get([current.chatKey,proof.messageIndex]));
+                if(!copy?.message?.raw||nativeMessageHash(copy.message.raw)!==proof.nativeHash)backedUp=false;
+              }
+            }
+            continue;
+          }
           if (Number.isInteger(current.messageIndex)) {
             const copy = await requestToPromise(stores.get(target).get([current.chatKey, current.messageIndex]));
             if ((target === STORES.historicalChanges ? copy?.message : copy)?.canonicalHash !== current.canonicalHash) {
@@ -587,23 +655,11 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
   }
 
   function pendingDeletionFingerprint(record) {
-    if (!record?.id) {
-      return "";
-    }
-    return JSON.stringify({
-      id: record.id,
-      chatKey: record.chatKey ?? "",
-      messageIndex: Number.isInteger(record.messageIndex) ? record.messageIndex : null,
-      kind: record.kind ?? "",
-      hashVersion: record.hashVersion ?? "",
-      canonicalHash: record.canonicalHash ?? "",
-      canonicalChatHash: record.canonicalChatHash ?? "",
-      chatLength: Number.isInteger(record.chatLength) ? record.chatLength : null,
-      createdAt: record.createdAt ?? "",
-      updatedAt: record.updatedAt ?? "",
-      backupTargets: record.backupTargets ?? [],
-      ...(record.snapshotSaveProof ? { snapshotSaveProof: record.snapshotSaveProof } : {}),
-    });
+    return pendingRecordFingerprint(record);
+  }
+  function recentProofMatches(meta,expected) {
+    return Boolean(expected.verifiedRecentHash)&&meta?.recentNativeHash===expected.verifiedRecentHash&&meta?.messageCount===expected.verifiedLength
+      &&meta?.recentCount===expected.verifiedRecentCount&&meta?.recentFirstIndex===expected.verifiedRecentFirstIndex&&meta?.recentLastIndex===expected.verifiedRecentLastIndex;
   }
 
   async function updateChatMetaSummary(db, chatKey, patch) {
@@ -614,6 +670,8 @@ export function createBackupOperations({ runTransaction, requestToPromise, stora
         ...(current ?? { chatKey }),
         ...patch,
         ...(Object.hasOwn(patch, 'fullBackupChatHash') ? { fullBackupChatHash: null } : {}),
+        ...(Object.hasOwn(patch,'fullBackupNativeHash')?{fullBackupNativeHash:null}:{}),
+        ...(Object.hasOwn(patch,'recentNativeHash')?{recentNativeHash:null}:{}),
         chatKey,
       }));
     });

@@ -37,7 +37,7 @@ export function createSqliteBackupBatches(repo) {
             for (const item of statement(`SELECT primary_key,payload FROM ${table} WHERE store=? AND chat_key=? AND primary_key>? ORDER BY primary_key LIMIT ?`).iterate(store, chatKey, after ?? '', BACKUP_BUDGET.rows + 1)) {
               let record;
               try { record = decode(item.payload); } catch { throw backupFailure('此聊天包含无法读取的备份记录，已有正式备份已保留。'); }
-              const value = hashesOnly ? { messageIndex: record.messageIndex, canonicalHash: record.canonicalHash, hashVersion: record.hashVersion } : record;
+              const value = hashesOnly ? { messageIndex: record.messageIndex, canonicalHash: record.canonicalHash, hashVersion: record.hashVersion, nativeHash: record.nativeHash } : record;
               const size = boundedRecordSize(value);
               if (!size.fits) throw backupFailure('单条备份超过安全上限。', 'backup-limit');
               if (rows.length && (rows.length >= BACKUP_BUDGET.rows || bytes + size.bytes > BACKUP_BUDGET.bytes || nodes + size.nodes > BACKUP_BUDGET.nodes)) { more = true; break; }

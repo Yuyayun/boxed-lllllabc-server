@@ -250,7 +250,9 @@ export function createTransferCoordinator({ control, adapters, locks = globalThi
     if (!state.journal) return { recovered: false };
     if (state.journal.version !== 3 && confirmed) {await notify('recover',state.journal);const result=await legacy.recover();await notify(state.journal.phase==='activated'?'completed':'cancelled',state.journal);return result;}
     return exclusive(async () => {
-      if (!confirmed) throw error(state.journal.kind==='clear'?"发现未完成的清空，请确认后继续核对，或放弃本次清空。":"发现未完成的迁移，请确认后继续核对，或放弃本次任务。", "recovery-required");
+      if (!confirmed) throw error(state.journal.phase==='activated'
+        ?state.journal.kind==='clear'?'上次清空已提交，需要核对是否完成收尾。':'上次切换已启用新位置，需要核对是否完成收尾。'
+        :'需要核对上次存储操作是否已经完成。', "recovery-required");
       logUnavailable=false;lastLogProgress=-Infinity;
       await notify('recover',(await control.read()).journal);
       return run((await control.read()).journal, true);

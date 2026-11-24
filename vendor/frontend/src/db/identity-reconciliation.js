@@ -76,8 +76,15 @@ export function rekeyBackupRecord(record, targetKey, type) {
     chatKey: targetKey,
   };
   if (type === "pending") {
-    const suffix = record.snapshotSaveProof ? "snapshot-restore" : record?.messageIndex === null ? "structural" : record?.messageIndex;
+    const suffix = record.pendingFormat ? String(record.id).slice(String(record.chatKey).length+1) : record.snapshotSaveProof ? "snapshot-restore" : record?.messageIndex === null ? "structural" : record?.messageIndex;
     next.id = `${targetKey}:${suffix}`;
+    if(record.pendingFormat) {
+      const rekey=id=>String(id).startsWith(`${record.chatKey}:`)?`${targetKey}:${String(id).slice(String(record.chatKey).length+1)}`:id;
+      if(record.insertIds)next.insertIds=record.insertIds.map(rekey);
+      // A changed chat namespace invalidates preview fingerprints; fresh restore
+      // intents are constructed after Rename rather than guessing old digests.
+      if(record.supersedes)next.supersedes=record.supersedes.map(item=>({...item,id:rekey(item.id)}));
+    }
   }
   return next;
 }

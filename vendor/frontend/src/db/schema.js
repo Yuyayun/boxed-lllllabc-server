@@ -1,5 +1,8 @@
 export const DB_NAME = "boxed-lllllabc";
-export const DB_VERSION = 8;
+// v9 is a compatibility fence: v8 clients can otherwise rewrite journal IDs
+// during Rename or clear records using the old structural verifier. No payload
+// migration or store-layout change is performed.
+export const DB_VERSION = 9;
 
 export const TRANSFER_STORES = Object.freeze({ meta: "__boxed_transfer_meta", rows: "__boxed_transfer_rows" });
 

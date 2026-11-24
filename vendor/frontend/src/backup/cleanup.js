@@ -103,7 +103,7 @@ function getCleanupBlockedReason({ chat, type, summary }) {
     return `当前没有${TYPE_LABELS[type]}可清理。`;
   }
   if (type === "pending") {
-    return "未保存变更是备份已记录、但尚未确认保存到酒馆聊天文件中的改动，当前版本禁止直接清理。";
+    return "这些改动记录仍在等待酒馆保存核对或备份补全，不代表酒馆保存失败；为保留恢复依据，当前版本禁止直接清理。";
   }
   if (type === "full" && (chat.isFrozen || chat.isAwaitingConfirmation)) {
     return chat.isFrozen
