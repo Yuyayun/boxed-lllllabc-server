@@ -2,11 +2,11 @@
 
 为[箱装辣白菜前端扩展](https://github.com/Yuyayun/boxed-lllllabc)提供可选的服务器备份存储（SQLite）。前后端分仓库、分别安装。
 
-**最新正式版：1.0.4** · [正式版下载](https://github.com/Yuyayun/boxed-lllllabc-server/releases/tag/v1.0.4)。修复没有实际修改正文的事务误推进版本，配合前端稳定读取冻结完整备份并改善预览；前后端需一并更新，无需清库或重新迁移备份，旧前端接口继续保留。
+**最新正式版：1.0.5** · [正式版下载](https://github.com/Yuyayun/boxed-lllllabc-server/releases/tag/v1.0.5)。配合前端完善删除和连续修改后的恢复，核对实际保存结果，并保护新版待确认记录。
 
 只安装前端即可使用浏览器本地备份。安装本插件后，不会自动切换位置或迁移数据；需要使用服务器存储时，再到前端确认切换。
 
-**开发分支：1.0.5，尚未正式发布。** 配合前端 1.0.5 支持新版未保存记录；SQLite schema 仍为 4，存储协议仍为 6，原备份无需清库或重新迁移。上方正式下载仍指向已发布的 1.0.4。实现与验证见[本次验收](docs/acceptance/2026-11-24-pending-recovery.md)。
+请与前端 1.0.5 配套更新。SQLite schema 仍为 4，存储协议仍为 6，原备份无需清库或重新迁移。实现与验证见[本次验收](docs/acceptance/2026-11-24-pending-recovery.md)及[正式发布核对](docs/acceptance/release-1.0.5.md)。
 
 本版没有增加修改酒馆源码的开关。删除捕获与恢复由前端独立完成，后端只提供对应的存储和条件核销能力。
 
@@ -23,7 +23,7 @@
 
 ## 安装
 
-先停止酒馆。从正式发布页面下载 `boxed-lllllabc-server-v1.0.4.zip`，解压后将其中的 `boxed-lllllabc-server` 目录放到：
+先停止酒馆。从正式发布页面下载 `boxed-lllllabc-server-v1.0.5.zip`，解压后将其中的 `boxed-lllllabc-server` 目录放到：
 
 ```text
 plugins/boxed-lllllabc-server
@@ -109,7 +109,7 @@ Git 安装可在插件目录执行 `git pull --ff-only` 更新当前分支；ZIP
 
 本机已完成约 479 MB 级和超过 1 GiB 数据的双向迁移、重启、旧版数据升级，以及两个酒馆版本的原生操作检查。Termux 实机、真实手机键盘和 Safari 等仍需对应环境验收。
 
-[更新日志](CHANGELOG.md) 面向使用者；本版见[1.0.4 正式发布核对](docs/acceptance/release-1.0.4.md)及[正文版本回归修复验收](docs/acceptance/2026-11-21-backup-version-fix.md)，此前见[1.0.3 备份竞态修复验收](docs/acceptance/2026-11-19-backup-race-fix.md)及[整改与实测对照](docs/acceptance/1.0.1-remediation-report.md)，[docs/acceptance](docs/acceptance/README.md) 保留历次阶段记录。
+[更新日志](CHANGELOG.md) 面向使用者；本版见[1.0.5 正式发布核对](docs/acceptance/release-1.0.5.md)及[恢复实现与验收](docs/acceptance/2026-11-24-pending-recovery.md)，此前见[1.0.4 正式发布核对](docs/acceptance/release-1.0.4.md)、[1.0.3 备份竞态修复验收](docs/acceptance/2026-11-19-backup-race-fix.md)及[整改与实测对照](docs/acceptance/1.0.1-remediation-report.md)，[docs/acceptance](docs/acceptance/README.md) 保留历次阶段记录。
 
 作者：**辣白菜 / labaicai0969**。
 
