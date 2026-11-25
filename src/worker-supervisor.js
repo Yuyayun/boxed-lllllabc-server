@@ -1,5 +1,6 @@
 import { Worker } from 'node:worker_threads';
 import { failure } from './errors.js';
+import {randomUUID} from 'node:crypto';
 import {runtimeLogContext,runtimeLogOutcome} from '../vendor/frontend/src/storage/runtime-log-labels.js';
 
 // Main-thread supervision remains runnable when synchronous SQLite work blocks
@@ -7,11 +8,11 @@ import {runtimeLogContext,runtimeLogOutcome} from '../vendor/frontend/src/storag
 export class SqliteWorker {
   constructor(file,{maxQueued=32,timeoutMs=120000,heartbeatMs=1000,workerFactory=(url,options)=>new Worker(url,options)}={}) {
     this.maxQueued=maxQueued;this.timeoutMs=timeoutMs;this.nextId=0;this.pending=new Map();this.startedAt=Date.now();this.lastMessageAt=this.startedAt;this.lastProgressAt=this.startedAt;this.progressSeq=0;this.initializing=true;
-    this.contexts=new Map();this.worker=workerFactory(new URL('./worker.js',import.meta.url),{workerData:{file,heartbeatMs}});
+    this.contexts=new Map();this.backupContexts=new Map();this.worker=workerFactory(new URL('./worker.js',import.meta.url),{workerData:{file,heartbeatMs}});
     this.ready=new Promise((resolve,reject)=>{this.resolveReady=resolve;this.rejectReady=reject;});this.ready.catch(()=>{});
     this.worker.on('message',message=>this.message(message));
     this.worker.on('error',error=>this.fail(error));
-    this.worker.on('exit',code=>{if(!this.closed)this.fail(failure('outcome-unknown',`SQLite 工作线程异常退出（${code}），需核对持久任务后恢复。`));});
+    this.worker.on('exit',code=>{if(!this.closed)this.fail(Object.assign(failure('outcome-unknown',`SQLite 工作线程异常退出（${code}），需核对持久任务后恢复。`),{workerExitCode:code}));});
   }
   notify(event){try{if(!this.observe)return false;this.observe(event);return true;}catch{return false;/* Logging cannot change a committed database outcome. */}}
   message(message) {
@@ -33,6 +34,7 @@ export class SqliteWorker {
     this.pending.delete(message.id);clearInterval(entry.timer);entry.cleanup();if(this.activeId===message.id)this.activeId=null;this.lastProgressAt=Date.now();
     const state=message.value;
     if(!message.error)Object.assign(entry.logContext,runtimeLogOutcome(entry.operation,state));
+    if(!message.error&&entry.operation==='beginBackupWrite'&&state?.id){if(this.backupContexts.size>=128)this.backupContexts.delete(this.backupContexts.keys().next().value);this.backupContexts.set(state.id,{chatRef:entry.logContext.chatRef,backupStore:entry.logContext.backupStore});}
     const receipt=state?.receipt??state;
     if(entry.taskId&&['switch','clear'].includes(receipt?.kind))this.contexts.set(entry.taskId,{kind:receipt.kind,from:receipt.from,to:receipt.to});
     const reported=this.notify({...this.contexts.get(entry.taskId),...entry.logContext,taskId:entry.taskId,operation:entry.action??entry.operation,workStage:entry.workStage,stage:message.error?'error':'finished',errorCode:message.error?.code??(message.error?'database-error':undefined),sqliteCode:message.error?.sqliteCode,elapsedMs:Date.now()-entry.queuedAt,queuedMs:(entry.startedAt??Date.now())-entry.queuedAt,count:state?.cleanupPhase?state.cleaned:state?.summary?.count,verified:state?.kind==='clear'?undefined:state?.verified,batch:state?.verifiedBatch,bytes:state?.summary?.bytes});
@@ -45,12 +47,13 @@ export class SqliteWorker {
     const metrics=this.initializing||entry?.startedAt?this.metrics:{};
     return {state:this.closed?'unavailable':this.initializing?'initializing':!entry?'idle':idleMs>this.timeoutMs?'no-progress':!entry.startedAt?'queued':silentMs>Math.min(15000,this.timeoutMs)?'unresponsive':idleMs>10000?'slow':'working',stage:this.initializing?this.stage??null:entry?(entry.startedAt?this.stage:entry.action??entry.operation):null,queued:this.pending.size,lastMessageAt:this.lastMessageAt,lastProgressAt:entry?.lastProgressAt??entry?.queuedAt??this.lastProgressAt,progressSeq:this.progressSeq,count:metrics?.count,verified:metrics?.verified,elapsedMs:entry?now-entry.queuedAt:this.initializing?now-this.startedAt:0,workerUptimeMs:now-this.startedAt};
   }
-  fail(error) {
+  fail(error,{shutdown=false}={}) {
     if(this.closed)return;this.closed=true;this.rejectReady(error);
-    for(const entry of this.pending.values()){clearInterval(entry.timer);entry.cleanup();const reported=this.notify({...this.contexts.get(entry.taskId),...entry.logContext,taskId:entry.taskId,operation:entry.action??entry.operation,workStage:entry.workStage,stage:'error',errorCode:error.code??'worker-exit',elapsedMs:Date.now()-entry.queuedAt,queuedMs:(entry.startedAt??Date.now())-entry.queuedAt});entry.reject(Object.assign(new Error(error.message,{cause:error}),error,{runtimeLogReported:reported}));}
-    this.pending.clear();this.contexts.clear();void this.worker.terminate();
+    const active=this.pending.get(this.activeId)??this.pending.values().next().value,reported=!shutdown&&this.notify({operation:'worker',stage:'error',errorCode:'worker-exit',causeCode:error.code,workerExitCode:error.workerExitCode,affectedCount:this.pending.size,...this.contexts.get(active?.taskId),...(active?{taskId:active.taskId,requestId:active.logContext.requestId,chatRef:active.logContext.chatRef,workStage:active.workStage}:{})});
+    for(const entry of this.pending.values()){clearInterval(entry.timer);entry.cleanup();entry.reject(Object.assign(new Error(error.message,{cause:error}),error,{runtimeLogReported:reported}));}
+    this.pending.clear();this.contexts.clear();this.backupContexts.clear();void this.worker.terminate();
   }
-  async call(operation,args,owner,{signal,authorize}={}) {
+  async call(operation,args,owner,{signal,authorize,requestId=randomUUID()}={}) {
     if(this.closed)throw failure('database-unavailable','SQLite 工作线程不可用，请检查日志后重启插件。');
     if(this.pending.size>=this.maxQueued)throw failure('queue-full','SQLite 请求队列已满，请稍后核对已有任务。',429);
     const id=++this.nextId,cancelBuffer=new SharedArrayBuffer(4),cancel=new Int32Array(cancelBuffer),abort=()=>Atomics.store(cancel,0,1);
@@ -59,7 +62,8 @@ export class SqliteWorker {
     const taskId=operation==='_batchTransfer'?(action==='begin'?args[1]?.[0]?.id:args[1]?.[0]):operation==='_transfer'?args[1]?.id:undefined;
     if(taskId&&action==='begin'){const input=args[1]?.[0];this.contexts.set(taskId,{kind:input.kind??'switch',from:input.from,to:input.to});}
     return new Promise((resolve,reject)=>{
-      const entry={resolve,reject,queuedAt:Date.now(),operation,action,taskId,logContext:runtimeLogContext(operation,args),cleanup:()=>signal?.removeEventListener('abort',abort)};
+      const cached=['appendBackupWrite','commitBackupWrite','abortBackupWrite','getBackupWriteStatus'].includes(operation)?this.backupContexts.get(args[0]?.id??args[0]):undefined;
+      const entry={resolve,reject,queuedAt:Date.now(),operation,action,taskId,logContext:{...cached,...runtimeLogContext(operation,args),requestId},cleanup:()=>signal?.removeEventListener('abort',abort)};
       entry.timer=setInterval(()=>{
         const latest=entry.startedAt?entry.lastProgressAt:Math.max(entry.queuedAt,this.lastProgressAt);
         if(!entry.timedOut&&Date.now()-latest>this.timeoutMs){entry.timedOut=true;abort();const error=failure('outcome-unknown','SQLite 等待超时，长时间没有有效进展；请求结果待核对，工作线程未被自动终止。');error.runtimeLogReported=this.notify({...this.contexts.get(taskId),...entry.logContext,taskId,operation:action??operation,workStage:entry.workStage,stage:'timeout',errorCode:error.code,elapsedMs:Date.now()-entry.queuedAt,queuedMs:(entry.startedAt??Date.now())-entry.queuedAt});entry.reject(error);}
@@ -73,9 +77,9 @@ export class SqliteWorker {
   }
   async close() {
     if(this.closed){await this.worker.terminate();return;}
-    if(this.startupFailed){this.fail(failure('database-unavailable','SQLite 初始化失败后已关闭。'));await this.worker.terminate();return;}
+    if(this.startupFailed){this.fail(failure('database-unavailable','SQLite 初始化失败后已关闭。'),{shutdown:true});await this.worker.terminate();return;}
     let timer;
     try{await Promise.race([this.call('_close',[],''),new Promise(resolve=>{timer=setTimeout(resolve,5000);})]);}
-    finally{clearTimeout(timer);this.fail(failure('database-unavailable','SQLite 插件已经关闭。'));await this.worker.terminate();}
+    finally{clearTimeout(timer);this.fail(failure('database-unavailable','SQLite 插件已经关闭。'),{shutdown:true});await this.worker.terminate();}
   }
 }

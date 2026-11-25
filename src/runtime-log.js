@@ -1,15 +1,24 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import {runtimeLogSeverity} from '../vendor/frontend/src/storage/runtime-log-labels.js';
 
 const DAY=86400000,LINE_LIMIT=4096;
 const ID=/^[a-zA-Z0-9_-]{8,80}$/;
-const CATEGORIES=new Set(['all','migration','cleanup','daily','error']);
+const CATEGORIES=new Set(['all','migration','cleanup','daily','storage','error']);
 const TERMINAL=new Set(['completed','cancelled']);
-const DURABLE=new Set(['registered','completed','cancelled','paused','recover','committed','activated','error','timeout']);
+const DURABLE=new Set(['registered','completed','cancelled','paused','recover','committed','activated','error','timeout','restore-confirmed','restore-failed']);
 const STAGES=new Set(['registered','inventory','source','source-check','source-checked','prepare','prepared','append','batch-verified','resume-batch','target-check','verified','committing','committed','commit-check','target-checked','before-control','activated','target-activated','finish-target','finish-source','release-source','release-target','completed','cancelled','paused','recover','error','started','finished','initializing','progress','timeout']);
+for(const stage of ['restore-started','restore-submitted','restore-confirmed','restore-blocked','restore-failed'])STAGES.add(stage);
 const safeCode=value=>typeof value==='string'&&/^[a-zA-Z0-9_-]{1,64}$/.test(value)?value:undefined;
 export function validateLogEvent(event) {
-  if(!event||Object.keys(event).some(k=>!['taskId','stage','from','to','kind','count','verified','batch','bytes','errorCode'].includes(k))||!ID.test(event.taskId)||!STAGES.has(event.stage)
+  if(event?.kind==='restore'){
+    const keys=['kind','stage','recoveryId','chatRef','recoverySource','storageMode','targetCount','selectedOption','candidateCount','errorCode'];
+    if(Object.keys(event).some(key=>!keys.includes(key))||!/^restore-(started|submitted|confirmed|blocked|failed)$/.test(event.stage)||!ID.test(event.recoveryId)||!/^[a-f\d]{16}$/.test(event.chatRef)||!['pending','recent','full','historical','snapshot','unknown'].includes(event.recoverySource)||!['indexeddb','sqlite'].includes(event.storageMode))throw new Error('恢复日志事件参数无效。');
+    for(const key of ['targetCount','selectedOption','candidateCount'])if(event[key]!==undefined&&(!Number.isSafeInteger(event[key])||event[key]<0))throw new Error('恢复日志数量参数无效。');
+    if(event.errorCode!==undefined&&!safeCode(event.errorCode))throw new Error('恢复日志错误代码无效。');
+    return event;
+  }
+  if(!event||Object.keys(event).some(k=>!['taskId','stage','from','to','kind','count','verified','batch','bytes','errorCode'].includes(k))||!ID.test(event.taskId)||!STAGES.has(event.stage)||event.stage.startsWith('restore-')
     ||!['indexeddb','sqlite'].includes(event.from)||!['indexeddb','sqlite'].includes(event.to)||event.from===event.to||!['switch','clear'].includes(event.kind))throw new Error('运行日志事件参数无效。');
   for(const name of ['count','verified','batch','bytes'])if(event[name]!==undefined&&(!Number.isSafeInteger(event[name])||event[name]<0))throw new Error('运行日志数量参数无效。');
   if(event.errorCode!==undefined&&!safeCode(event.errorCode))throw new Error('运行日志错误代码无效。');
@@ -46,20 +55,25 @@ export class RuntimeLog {
   }
   record(input){return this.serial(async()=>{
     await this.init();const time=this.now(),timestamp=new Date(time).toISOString(),taskId=ID.test(input.taskId??'')?input.taskId:undefined;
-    const scope=taskId?(input.kind==='clear'?'cleanup':'migration'):'daily',group=taskId?'task-'+taskId:'daily-'+timestamp.slice(0,10);
-    const error=!!input.errorCode||['error','timeout'].includes(input.stage),stage=STAGES.has(input.stage)?input.stage:'progress';
-    const entry={seq:++this.state.seq,timestamp,category:error?'error':scope,scope,...(taskId?{taskId}:{}),stage};
-    for(const name of ['operation','errorCode','from','to','kind']){const value=safeCode(input[name]);if(value)entry[name]=value;}
+    const scope=taskId?(input.kind==='clear'?'cleanup':input.kind==='switch'?'migration':'storage'):'daily',group=taskId?'task-'+taskId:'daily-'+timestamp.slice(0,10);
+    const severity=runtimeLogSeverity(input),error=severity==='error',stage=STAGES.has(input.stage)?input.stage:'progress';
+    const entry={seq:++this.state.seq,timestamp,category:error?'error':scope,scope,severity,...(taskId?{taskId}:{}),stage};
+    for(const name of ['operation','errorCode','from','to','kind','causeCode']){const value=safeCode(input[name]);if(value)entry[name]=value;}
+    for(const name of ['requestId','recoveryId'])if(ID.test(input[name]??''))entry[name]=input[name];
+    if(/^[a-f\d]{16}$/.test(input.chatRef??''))entry.chatRef=input.chatRef;
+    if(['pending','recent','full','historical','snapshot','unknown'].includes(input.recoverySource))entry.recoverySource=input.recoverySource;
+    if(['indexeddb','sqlite'].includes(input.storageMode))entry.storageMode=input.storageMode;
+    if(Number.isSafeInteger(input.workerExitCode)&&input.workerExitCode>=-2147483648&&input.workerExitCode<=2147483647)entry.workerExitCode=input.workerExitCode;
     if(['full_messages','recent_messages','historical_changes','pending_changes'].includes(input.backupStore))entry.backupStore=input.backupStore;
     if(['draft','committed','aborted','missing'].includes(input.backupState))entry.backupState=input.backupState;
     const workStage=safeCode(input.workStage);if(workStage)entry.workStage=workStage;
-    for(const name of ['count','verified','batch','bytes','elapsedMs','queuedMs','progressSeq','sqliteCode'])if(Number.isSafeInteger(input[name])&&input[name]>=0)entry[name]=input[name];
+    for(const name of ['count','verified','batch','bytes','elapsedMs','queuedMs','progressSeq','sqliteCode','targetCount','selectedOption','candidateCount','suppressedCount','affectedCount'])if(Number.isSafeInteger(input[name])&&input[name]>=0)entry[name]=input[name];
     const previous=await this.getMeta(group),meta=previous??{version:1,group,startedAt:timestamp,endedAt:null,hadError:false,status:taskId?'pending':'completed'};
     meta.hadError ||= error||stage==='recover';meta.lastSeq=entry.seq;
     if(!taskId||TERMINAL.has(stage)){meta.endedAt=timestamp;meta.status=taskId?stage:'completed';}
     // Write sticky error/pending retention before the entry. An interruption
     // cannot leave earlier task context eligible for seven-day deletion.
-    let durable=!previous||error||taskId&&DURABLE.has(stage)||time-this.lastSyncAt>=1000;
+    let durable=!previous||error||stage.startsWith('restore-')||taskId&&DURABLE.has(stage)||time-this.lastSyncAt>=1000;
     let line=JSON.stringify(entry)+'\n';if(Buffer.byteLength(line)>LINE_LIMIT)throw new Error('日志条目超过上限。');
     const size=(await this.stat(this.file(this.state.part)))?.size??0;
     if(size&& (size+Buffer.byteLength(line)>this.maxFileBytes||this.state.date!==timestamp.slice(0,10))){this.state.part++;this.state.date=timestamp.slice(0,10);durable=true;}
@@ -69,6 +83,7 @@ export class RuntimeLog {
     const h=await fs.open(this.file(this.state.part),'a',0o600);try{await h.write(line);if(durable)await h.sync();}finally{await h.close();}
     if(durable){await this.atomic(path.join(this.directory,'boxed-lllllabc-log-state.json'),this.state);this.lastSyncAt=time;}return entry;
   });}
+  probe(){return this.serial(async()=>{await this.init();const handle=await fs.open(this.file(this.state.part),'a',0o600);await handle.close();});}
   page({category='all',cursor,limit=50,bytes=65536}={}){return this.serial(async()=>{
     await this.init();if(!CATEGORIES.has(category)||!Number.isSafeInteger(limit)||limit<1||limit>100||!Number.isSafeInteger(bytes)||bytes<4096||bytes>131072)throw new Error('日志分页参数无效。');
     let p=this.state.part,o=null;
@@ -88,6 +103,8 @@ export class RuntimeLog {
         // Older writers labeled every task as migration. Correct that view
         // from its recorded kind without rewriting historical log files.
         if(item.kind==='clear'){item.scope='cleanup';if(item.category!=='error')item.category='cleanup';}
+        item.severity=runtimeLogSeverity(item);
+        if(item.category==='error'&&item.severity!=='error')item.category=item.scope??'daily';
         if(category!=='all'&&!(category==='error'?item.category==='error':item.scope===category))continue;
         const size=Buffer.byteLength(JSON.stringify(item));if(entries.length&&used+size>bytes){o=lineStart+raw.length+1;break;}
         entries.push(item);used+=size;

@@ -1,5 +1,6 @@
 import { hashCanonicalChat, stableStringify } from './canonicalize.js';
 import { nativeMessageText, nativeMessageHash, nativeStateHash, sha256Text,sha256TextAsync,knownNativeHash,cacheNativeHash,cloneNativeChat } from './native-content.js';
+import { nativeDefaultSeeds } from './pending-native-defaults.js';
 
 export const PENDING_FORMAT = 1;
 export function newOperationId() {
@@ -51,7 +52,7 @@ async function prepareEntries(entries) {
 export function createPendingObserver({ readCurrent, uuid = newOperationId, now = () => new Date().toISOString(),deferHashes=false }) {
   let observed = null;
   function reset(current = readCurrent()) {
-    observed = current?.ok ? { key: current.identity.chatKey, integrity:current.identity.meta?.chatIntegrity??'',streamId: uuid(), sequence: 0, entries: current.chat.map(message => snapshot(message,undefined,deferHashes)) } : null;
+    observed = current?.ok ? { key: current.identity.chatKey, integrity:current.identity.meta?.chatIntegrity??'',array:current.chat,streamId: uuid(), sequence: 0, entries: current.chat.map(message => snapshot(message,undefined,deferHashes)) } : null;
     if(deferHashes&&observed)prepareEntries(observed.entries).catch(()=>{});
   }
   function capture(trigger) {
@@ -76,7 +77,7 @@ export function createPendingObserver({ readCurrent, uuid = newOperationId, now 
     const before = observed.entries;
     // Deletion must inspect surviving content too: a missed edit must not turn
     // into a fabricated pure delete. Ordinary known-index events reuse the rest.
-    const scanAll = trigger.eventName === 'message_deleted' || swipeTarget === null;
+    const scanAll = trigger.eventName === 'message_deleted' || trigger.eventName === 'generation_ended' || trigger.eventName === 'generation_stopped' || swipeTarget === null;
     const byReference = scanAll ? new Map(before.map(entry => [entry.ref, entry])) : null;
     const after = current.chat.map((message, index) => scanAll ? snapshot(message, byReference.get(message),deferHashes)
       : index === swipeTarget || !before[index] || before[index].ref !== message ? snapshot(message, before[index],deferHashes) : before[index]);
@@ -84,7 +85,7 @@ export function createPendingObserver({ readCurrent, uuid = newOperationId, now 
     while (start < before.length && start < after.length && before[start].text === after[start].text) start++;
     let endBefore = before.length, endAfter = after.length;
     while (endBefore > start && endAfter > start && before[endBefore - 1].text === after[endAfter - 1].text) { endBefore--; endAfter--; }
-    if (start === before.length && start === after.length) { observed.entries = after; return base; }
+    if (start === before.length && start === after.length) { observed.entries = after;observed.array=current.chat; return base; }
     const operationId = uuid(), stamp = now();
     const inserted = after.slice(start, endAfter);
     const kind = !inserted.length && endBefore > start ? 'message_delete'
@@ -104,13 +105,22 @@ export function createPendingObserver({ readCurrent, uuid = newOperationId, now 
       parts.forEach((part,index)=>{part.nativeHash=inserted[index].hash;cacheNativeHash(part.raw,inserted[index].text,part.nativeHash);});
       operation.insertHashes=parts.map(part=>part.nativeHash);
     };
-    observed = { ...observed, entries: after, sequence: operation.sequence };
+    observed = { ...observed, array:current.chat, entries: after, sequence: operation.sequence };
     const captured={ ...base, records: [...parts, operation] };
     if(deferHashes){captured.ready=Promise.all([prepareEntries(before),prepareEntries(after)]).then(finalize);captured.ready.catch(()=>{});}
     else finalize();
     return captured;
   }
-  return { reset, capture };
+  function settle() {
+    const current=readCurrent();
+    if(!current?.ok||!observed||observed.array!==current.chat||observed.key!==current.identity.chatKey||observed.integrity!==(current.identity.meta?.chatIntegrity??'')) {
+      reset(current);return {records:[],chatKey:current?.ok?current.identity.chatKey:null};
+    }
+    // Called after native event handlers, separately from immediate capture.
+    // A full diff appends a new operation; earlier intent is never rewritten.
+    return capture({eventName:'message_updated',args:[]});
+  }
+  return { reset, capture, settle };
 }
 
 export function eventMessageIndex(trigger, length) {
@@ -216,7 +226,14 @@ export function confirmedJournalRecords(records, chatKey, backendChat,{snapshotI
   const work = inspected.operations.filter(operation => operation.row.afterNativeHash === hash && operation.row.afterLength === backendChat.length)
     .map(operation => ({ operation, hashes, positions: hashes.map((_, index) => index) }));
   const visited = new Set();
-  while(work.length) {
+  let checkedDefaults=false;
+  while(work.length||!checkedDefaults) {
+    if(!work.length) {
+      checkedDefaults=true;
+      if(visited.size===inspected.operations.length)break;
+      work.push(...nativeDefaultSeeds(inspected.operations,backendChat,hashes));
+      if(!work.length)break;
+    }
     const {operation,hashes:after,positions}=work.pop(),row=operation.row;
     if(row.snapshotSaveProof&&!snapshotIds.has(row.id))continue;
     if(visited.has(row.id))continue;
@@ -229,7 +246,7 @@ export function confirmedJournalRecords(records, chatKey, backendChat,{snapshotI
     const historical=[];
     for(let i=0;i<operation.parts.length;i++) {
       const part=operation.parts[i],index=positions[row.deleteStartIndex+i];
-      const copies=index===null?[]:[{messageIndex:index,nativeHash:part.nativeHash}];
+      const copies=index===null?[]:[{messageIndex:index,nativeHash:hashes[index]}];
       proofs.set(part.id,{historical:copies,via:row.id});ids.add(part.id);historical.push(...copies);
     }
     proofs.set(row.id,{historical,via:row.id});
@@ -237,7 +254,7 @@ export function confirmedJournalRecords(records, chatKey, backendChat,{snapshotI
     for(const legacy of records) if(!isJournalRecord(legacy)&&Number.isInteger(legacy.messageIndex)&&legacy.message?.raw
       && legacy.updatedAt && legacy.updatedAt<row.createdAt && before[legacy.messageIndex]===nativeMessageHash(legacy.message.raw)) {
       const index=beforePositions[legacy.messageIndex];
-      ids.add(legacy.id);proofs.set(legacy.id,{historical:index===null?[]:[{messageIndex:index,nativeHash:before[legacy.messageIndex]}],via:row.id,superseded:true});
+      ids.add(legacy.id);proofs.set(legacy.id,{historical:index===null?[]:[{messageIndex:index,nativeHash:hashes[index]}],via:row.id,superseded:true});
     }
     for(const previous of predecessors(operation,inspected.operations)) work.push({operation:previous,hashes:before,positions:beforePositions});
   }

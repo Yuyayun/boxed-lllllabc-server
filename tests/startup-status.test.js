@@ -43,8 +43,10 @@ test('欢迎页检查断连传递取消并明确记录检查失败，下一次�
   const reader=response.body.getReader();await reader.read();controller.abort();
   try{await reader.cancel();}catch{/* Aborted response bodies may already be closed. */}
   await aborted;
-  const errors=(await f.call('/logs?category=error')).value.entries;
+  const errors=(await f.call('/logs?category=all')).value.entries;
   assert.ok(errors.some(row=>row.operation==='_status'&&row.errorCode==='cancelled'));
+  assert.ok(errors.every(row=>row.severity==='notice'));
+  assert.equal((await f.call('/logs?category=error')).value.entries.length,0);
   assert.ok(errors.every(row=>row.operation==='_status'));
   const message=errors.map(entry=>formatRuntimeLog(entry)).join('\n');
   assert.match(message,/检查服务器存储.*本次连接检查已取消/);assert.doesNotMatch(message,/日常备份操作/);

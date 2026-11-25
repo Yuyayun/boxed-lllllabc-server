@@ -1,5 +1,9 @@
 // Fixed labels only: callers must never turn chat text, SQL, paths or raw error
 // messages into a log label. New storage operations need an explicit entry here.
+import {sha256Text} from '../backup/native-content.js';
+
+export const chatLogRef=key=>typeof key==='string'&&key.length>0&&key.length<=4096?sha256Text(key).slice(0,16):undefined;
+export const shortLogRef=id=>typeof id==='string'?sha256Text(id).slice(0,8):undefined;
 export const RUNTIME_LOG_OPERATIONS = Object.freeze({
   getBackupSummary:'读取当前聊天备份摘要', getBackupPage:'分批读取备份内容', getBackupCatalogPage:'分批读取全部聊天备份目录',
   beginBackupWrite:'准备分批写入备份', appendBackupWrite:'写入备份暂存批次', commitBackupWrite:'提交分批备份',
@@ -9,7 +13,7 @@ export const RUNTIME_LOG_OPERATIONS = Object.freeze({
   getRecentMessages:'读取最近楼层备份', putRecentMessages:'保存最近楼层备份', replaceRecentSnapshot:'替换最近楼层备份',
   getFullMessages:'读取完整聊天备份', putFullMessages:'保存完整聊天备份', replaceFullSnapshot:'替换完整聊天备份',
   getHistoricalChanges:'读取历史楼层改动', putHistoricalChanges:'保存历史楼层改动', putHistoricalChange:'保存历史楼层改动',
-  getPendingChanges:'读取未保存变更保护记录', putPendingChanges:'保存未保存变更保护记录', replacePendingChanges:'替换未保存变更保护记录',
+  getPendingChanges:'读取待确认改动记录', putPendingChanges:'保存待确认改动记录', replacePendingChanges:'替换待确认改动记录',
   deletePendingChangesIfUnchanged:'核对并清除已满足条件的保护记录', getBackupCatalogData:'读取备份目录数据',
   reconcileChatIdentity:'核对聊天身份', migrateRenamedChatIdentity:'接续改名聊天的备份', deleteBackupTypeForChat:'删除当前聊天指定类型备份',
   resolveFrozenFullBackup:'处理暂停更新的完整备份', deleteBackupBatch:'批量清理选定备份', getBackupCatalog:'读取全部聊天备份目录',
@@ -17,6 +21,7 @@ export const RUNTIME_LOG_OPERATIONS = Object.freeze({
   getSnapshotHeader:'读取聊天快照信息', getSnapshotMessages:'分批读取聊天快照内容', listSnapshots:'读取聊天快照列表', renameSnapshot:'重命名聊天快照', deleteSnapshot:'删除聊天快照',
   createSnapshot:'创建聊天快照', _status:'检查服务器存储', _close:'关闭服务器存储', initialize:'准备服务器存储',
   request:'处理服务器存储请求', _operation:'校验备份操作请求', _transfer:'处理旧版存储任务', _batchTransfer:'处理分批存储任务',
+  worker:'服务器存储线程', restore:'恢复聊天内容',
   _readLogs:'读取运行日志', _writeLogEvent:'记录存储任务日志', _cleanupLogs:'清理已结束任务的日志',
   begin:'登记存储任务', status:'读取存储任务状态', inspect:'核对存储任务记录', prepareStep:'准备目标存放位置',
   sourceNext:'读取来源备份批次', append:'写入目标备份批次', verifyBatch:'读回核对目标批次', startSeal:'开始最终核对', sealStep:'分批最终核对',
@@ -24,15 +29,17 @@ export const RUNTIME_LOG_OPERATIONS = Object.freeze({
   beginAbort:'开始撤销存储任务', finishStep:'整理存储任务收尾数据', release:'解除已结束任务的锁定', rollback:'回滚旧版存储任务', finish:'完成旧版存储任务收尾',
 });
 
-const backupTypes = Object.freeze({full_messages:'完整聊天备份',recent_messages:'最近楼层备份',historical_changes:'历史楼层改动',pending_changes:'未保存变更保护记录'});
+const backupTypes = Object.freeze({full_messages:'完整聊天备份',recent_messages:'最近楼层备份',historical_changes:'历史楼层改动',pending_changes:'待确认改动记录'});
 const typedVerbs = Object.freeze({getBackupPage:'分批读取',beginBackupWrite:'准备分批写入',applyBackupPatch:'更新',deleteBackupV2:'删除',deleteBackupBatchV2:'批量删除'});
 export function runtimeLogContext(operation,args=[]) {
   const store=args[0]?.store;
-  return typeof operation==='string'&&Object.hasOwn(typedVerbs,operation)&&typeof store==='string'&&Object.hasOwn(backupTypes,store)?{backupStore:store}:{};
+  const chatKey=args[0]?.chatKey??(typeof args[0]==='string'&&['getChatMeta','getRecentMessages','getFullMessages','getHistoricalChanges','getPendingChanges'].includes(operation)?args[0]:Array.isArray(args[0])?args[0][0]?.chatKey:undefined);
+  return {...(typeof operation==='string'&&Object.hasOwn(typedVerbs,operation)&&typeof store==='string'&&Object.hasOwn(backupTypes,store)?{backupStore:store}:{}),...(chatLogRef(chatKey)?{chatRef:chatLogRef(chatKey)}:{})};
 }
 export function runtimeLogOutcome(operation,value) {
   if(!['beginBackupWrite','appendBackupWrite','commitBackupWrite','abortBackupWrite','getBackupWriteStatus'].includes(operation))return {};
   return {backupState:['draft','committed','aborted'].includes(value?.state)?value.state:operation==='getBackupWriteStatus'&&value==null?'missing':undefined,
+    ...(chatLogRef(value?.chatKey)?{chatRef:chatLogRef(value.chatKey)}:{}),
     ...(typeof value?.store==='string'&&Object.hasOwn(backupTypes,value.store)?{backupStore:value.store}:{})};
 }
 export function runtimeLogOperation(entry) {
@@ -56,7 +63,16 @@ export function runtimeLogWorkStage(entry) {
 }
 
 const readOperations = new Set(['_status','getBackupSummary','getBackupPage','getBackupCatalogPage','getBackupWriteStatus','getChatMeta','getRecentMessages','getFullMessages','getHistoricalChanges','getPendingChanges','getBackupCatalogData','getBackupCatalog','getSnapshotHeader','getSnapshotMessages','listSnapshots','status','inspect','sourceNext']);
+export function runtimeLogSeverity(entry){
+  if(entry.errorCode==='cancelled'&&readOperations.has(entry.operation))return 'notice';
+  if(['backup-version-changed','backup-source-changed','restore-source-changed','restore-save-pending','restore-save-unconfirmed','restore-preview-unavailable','legacy-proof-missing','legacy-proof-mismatch','legacy-order-uncertain','legacy-body-missing','legacy-recovery-unconfirmed','pending-observation-gap'].includes(entry.errorCode))return 'notice';
+  return entry.errorCode||['error','timeout','restore-failed'].includes(entry.stage)?'error':'info';
+}
 export function runtimeLogResult(entry,defaultStage) {
+  const recoveryStages={'restore-started':'开始处理恢复','restore-submitted':'已请求酒馆保存，等待重读核对','restore-confirmed':'恢复内容及其备份已核对完成','restore-blocked':'暂不能确认恢复内容，原记录保留','restore-failed':'恢复未完成，保护记录保留'};
+  if(Object.hasOwn(recoveryStages,entry.stage))return recoveryStages[entry.stage];
+  if(entry.errorCode==='backup-version-changed')return '内容已变化，需要重新读取';
+  if(entry.errorCode==='backup-source-changed')return '聊天已变化，等待接续备份';
   if(entry.errorCode==='outcome-unknown')return '结果尚待核对';
   if(entry.errorCode==='cancelled')return '请求已取消';
   if(entry.stage!=='finished')return defaultStage;
@@ -99,8 +115,15 @@ const errors = Object.freeze({
   'snapshot-conflict':'快照内容或状态与本次操作不符，请重新查看快照后再试', conflict:'当前备份保护条件不满足，请重新查看备份状态',
   'queue-full':'服务器请求正在排队，请等待已有操作结束后重试', 'invalid-request':'请求参数未通过检查，请确认前后端版本一致后重试',
   'worker-exit':'服务器存储线程已退出，请检查服务器日志并在重启后核对操作结果', paused:'任务已暂停，请在备份位置设置中继续处理',
+  'restore-preview-unavailable':'现有记录还不足以确认恢复内容，请查看恢复界面说明',
+  'legacy-proof-missing':'旧记录缺少可确认的整聊依据，原数据保留', 'legacy-proof-mismatch':'现有连续副本未能通过旧聊天核对，原数据保留',
+  'legacy-order-uncertain':'旧记录的先后或分支归属无法确认，原数据保留', 'legacy-body-missing':'所需旧消息正文不完整，原数据保留', 'legacy-recovery-unconfirmed':'旧聊天内容还不能安全确认，原数据保留',
+  'pending-observation-gap':'操作前的聊天观察缺失，无法确认结构变化，原记录保留',
+  'restore-source-changed':'恢复准备期间聊天或来源已变化，请重新预览', 'restore-protection-failed':'恢复保护未能写入，已停止应用并保留原记录',
+  'restore-render-failed':'内容已应用，但界面更新失败，保存仍需核对', 'restore-save-unconfirmed':'酒馆保存尚未确认，恢复保护继续保留', 'restore-save-pending':'酒馆保存请求仍在等待，继续保留保护并后台核对',
 });
 export function runtimeLogError(entry) {
+  if(entry.errorCode==='worker-exit'&&entry.causeCode==='ERR_WORKER_OUT_OF_MEMORY')return '服务器存储线程因内存不足退出，请检查运行环境并核对操作结果';
   if(entry.errorCode==='cancelled'){
     if(entry.operation==='_status')return '本次连接检查已取消，可重新检查服务器连接';
     if(readOperations.has(entry.operation))return '本次读取已取消，未取得完整读取结果，可重新查看';

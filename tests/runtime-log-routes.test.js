@@ -29,9 +29,9 @@ test('前端已记录进度时后端不重复记录；失联回退仍五秒限�
   const worker={call:async()=>({writable:true,batchTransfer:3}),close:async()=>{}};
   const f=await routeFixture(t,{createWorker:()=>worker}),event={taskId:'shared-progress-task',from:'indexeddb',to:'sqlite',kind:'switch'};
   await f.call('/logs/event',{protocol:STORAGE_PROTOCOL,...event,stage:'registered'});const status=await f.call('/status');assert.equal(status.pluginVersion,JSON.parse(await fs.readFile(new URL('../package.json',import.meta.url),'utf8')).version);
-  const send=()=>worker.observe({...event,stage:'progress',operation:'verifyBatch',count:1});
+  const send=(count=1)=>worker.observe({...event,stage:'progress',operation:'verifyBatch',count});
   now+=4000;send();assert.equal((await f.call('/logs?category=all')).value.entries.filter(row=>row.stage==='progress').length,0);
-  now+=7000;send();now+=1000;send();now+=4000;send();
+  now+=7000;send();now+=1000;send();now+=4000;send(2);
   let rows=(await f.call('/logs?category=all')).value.entries;assert.equal(rows.filter(row=>row.stage==='progress').length,2);
   await f.call('/logs/event',{protocol:STORAGE_PROTOCOL,...event,stage:'committing'});worker.observe({...event,stage:'finished',operation:'commit'});
   await f.call('/logs/event',{protocol:STORAGE_PROTOCOL,...event,stage:'completed'});rows=(await f.call('/logs?category=all')).value.entries;
@@ -50,8 +50,9 @@ test('清空任务与日常保存错误的浏览器记录和终端说明一致�
 test('分批读写错误保留操作和备份类型，校验失败不泄露请求中的自定义内容',async t=>{
   const f=await routeFixture(t);
   assert.equal((await f.operation('getBackupPage',[{chatKey:'synthetic',store:'full_messages',revision:-1}])).ok,false);
-  const rows=(await f.call('/logs?category=error')).value.entries;
+  const rows=(await f.call('/logs?category=all')).value.entries;
   assert.equal(rows.length,1);assert.equal(rows[0].operation,'getBackupPage');assert.equal(rows[0].backupStore,'full_messages');assert(Number.isSafeInteger(rows[0].queuedMs));
+  assert.equal(rows[0].severity,'notice');assert.equal((await f.call('/logs?category=error')).value.entries.length,0);
   assert.equal((await f.call('/operation',{protocol:STORAGE_PROTOCOL,operation:'SECRET_CONTENT',args:[]})).ok,false);
   const all=(await f.call('/logs?category=error')).value.entries;
   assert.ok(all.some(row=>row.operation==='_operation'));assert.doesNotMatch(JSON.stringify(all),/SECRET_CONTENT/);

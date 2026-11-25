@@ -3,61 +3,35 @@ import { SqliteWorker } from './worker-client.js';
 import { failure, safeError } from './errors.js';
 import { STORAGE_PROTOCOL, STORAGE_OPERATIONS, validateBatchCall, encodeStorageValue, decodeStorageValue } from '../vendor/frontend/src/storage/protocol.js';
 import { RuntimeLog, validateLogEvent } from './runtime-log.js';
-import {formatRuntimeLog} from '../vendor/frontend/src/storage/runtime-log-format.js';
 import {runtimeLogContext} from '../vendor/frontend/src/storage/runtime-log-labels.js';
 import path from 'node:path';
+import {randomUUID} from 'node:crypto';
+import {LogReporter} from './log-reporter.js';
 
 export function installRoutes(router, { host, hostError, createWorker = (file) => new SqliteWorker(file) }) {
   let worker;
   let workerError;
   let logger,maintenance;
-  const capabilities={batchTransfer:3,recovery:1,supervision:1,logs:1,boundedBackup:1,pendingBackupProof:1,pendingJournal:1};
+  const capabilities={batchTransfer:3,recovery:1,supervision:1,logs:1,recoveryLogs:1,boundedBackup:1,pendingBackupProof:1,pendingJournal:1};
   const getLogger=()=>logger??=new RuntimeLog(path.dirname(databasePath(host)));
-  let logHealth={available:true},lastTerminalProgress=0;
-  const frontendLogActivity=new Map();
-  const logFailed=()=>{if(logHealth.available)console.warn('[箱装辣白菜] 运行日志暂时无法写入；备份结果仍以任务登记为准。请检查服务器备份目录。');logHealth={available:false};};
-  const recordLog=async (event,fromFrontend=false)=>{
-    try{const result=await getLogger().record(event);logHealth={available:true};
-      if(fromFrontend&&event.taskId){
-        if(['completed','cancelled'].includes(event.stage))frontendLogActivity.delete(event.taskId);
-        else{if(frontendLogActivity.size>=32)frontendLogActivity.delete(frontendLogActivity.keys().next().value);frontendLogActivity.set(event.taskId,Date.now());}
-      }
-      if(result&&(result.category==='error'||['registered','completed','cancelled','paused','recover'].includes(result.stage)||Date.now()-lastTerminalProgress>=5000)){
-        console.log('[箱装辣白菜]',formatRuntimeLog(result,{utc:true}));lastTerminalProgress=Date.now();
-      }return result;
-    }catch(error){logFailed();throw error;}
-  };
-  const writeLog=event=>recordLog(event).catch(()=>null);
+  const logs=new LogReporter(getLogger);
+  const recordLog=(event,frontend=false)=>logs.record(event,frontend);
+  const writeLog=event=>logs.record(event).catch(()=>null);
   const getWorker = () => {
     if (workerError) throw workerError;
     try {
-      if(!worker){worker=createWorker(databasePath(host));let lastDaily=0,lastTaskProgress=0;
-        worker.observe=event=>{
-          if(!event.taskId&&!event.errorCode){if(event.stage!=='finished'||Date.now()-lastDaily<60000)return;lastDaily=Date.now();}
-          if(['inspect','status'].includes(event.operation)&&!event.errorCode)return;
-          if(event.taskId&&!event.errorCode){
-            if(event.stage==='progress'){
-              // The frontend already records this task's aggregate progress.
-              // Retain server-side fallback when it has been silent for two
-              // logging intervals; heartbeat/UI supervision is unchanged.
-              if(Date.now()-(frontendLogActivity.get(event.taskId)??-Infinity)<10000)return;
-              if(Date.now()-lastTaskProgress<5000)return;lastTaskProgress=Date.now();
-            }
-            else if(event.stage==='started'?!['begin','commit','activate','beginAbort'].includes(event.operation):!['begin','commit','activate','beginAbort','release'].includes(event.operation))return;
-          }
-          void writeLog(event);
-        };
-      }
+      if(!worker){worker=createWorker(databasePath(host));worker.observe=event=>logs.observe(event);}
       return worker;
     }
     catch (error) { workerError = error; throw error; }
   };
   const route = (handler, operation = 'request') => async (request, response) => {
     response.set('Cache-Control', 'no-store');
-    const startedAt=Date.now(),logContext={operation},describe=details=>Object.assign(logContext,details);
+    const startedAt=Date.now(),logContext={operation,requestId:randomUUID()},describe=details=>Object.assign(logContext,details);
+    request.boxedLogRequestId=logContext.requestId;
     let streaming=false,timer;
     const send=value=>{
-      const data={protocol:STORAGE_PROTOCOL,capabilities,logHealth,...value};
+      const data={protocol:STORAGE_PROTOCOL,capabilities,logHealth:logs.health,...value};
       if(streaming){if(!response.destroyed){response.write(JSON.stringify({type:'result',...data})+'\n');response.end();}}
       else if(!response.destroyed)response.json(data);
     };
@@ -82,9 +56,9 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
     } catch (error) {
       const safe = safeError(error);
       if(!error.runtimeLogReported){
-        const event={...logContext,stage:'error',errorCode:safe.code,elapsedMs:Date.now()-startedAt};
-        const logged=!String(request.url??'').includes('/logs')&&await writeLog(event);
-        if(!logged)console.error('[箱装辣白菜]',formatRuntimeLog({...event,timestamp:new Date().toISOString()},{utc:true}));
+        const event={...logContext,stage:'error',errorCode:safe.code,causeCode:error.code!==safe.code?error.code:undefined,workerExitCode:error.workerExitCode,elapsedMs:Date.now()-startedAt};
+        if(String(request.url??'').includes('/logs'))logs.consoleOnly(event);
+        else await writeLog(event);
       }
       if (!response.destroyed){if(!streaming)response.status(safe.status||503);send({ ok:false,code:safe.code,reason:safe.message });}
     }finally{clearInterval(timer);}
@@ -106,11 +80,11 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
     return {value:await getLogger().cleanup({manual:true,cursor:body.cursor??0,maxFiles:4})};
   }, '_cleanupLogs'));
   let cleanupCursor=0;
-  maintenance=setInterval(()=>{if(logger)void logger.cleanup({cursor:cleanupCursor,maxFiles:2}).then(result=>{cleanupCursor=result.cursor??0;}).catch(logFailed);},60000);maintenance.unref();
-  router.get('/status', route(async (request, owner, signal) => ({
-    pluginVersion: '1.0.5', state: 'connected',
-    database: await getWorker().call('_status', [], owner, { signal, authorize: () => authorize(host, request) }),
-  }), '_status'));
+  maintenance=setInterval(()=>{if(logger)void logger.cleanup({cursor:cleanupCursor,maxFiles:2}).then(result=>{cleanupCursor=result.cursor??0;}).catch(()=>logs.failed());},60000);maintenance.unref();
+  router.get('/status', route(async (request, owner, signal) => {
+    void logs.probe();
+    return {pluginVersion: '1.0.5-fix.1', state:'connected',database:await getWorker().call('_status',[],owner,{signal,requestId:request.boxedLogRequestId,authorize:()=>authorize(host,request)})};
+  }, '_status'));
   router.post('/operation', route(async (request, owner, signal, describe) => {
     const body = request.body;
     if (body?.protocol !== STORAGE_PROTOCOL) throw failure('protocol-incompatible', '前后端存储协议不兼容，请升级对应插件。', 409);
@@ -122,7 +96,7 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
     if (!Array.isArray(args) || args.length > 3) throw failure('invalid-request', '操作参数格式无效。', 400);
     describe(runtimeLogContext(body.operation,args));
     if (body.operation === 'deletePendingChangesIfUnchanged' && args.length !== 1) throw failure('invalid-request', '条件删除只接受原记录，不接受客户端保护规则。', 400);
-    const result = await getWorker().call(body.operation, args, owner, { signal, authorize: () => authorize(host, request) });
+    const result = await getWorker().call(body.operation, args, owner, { signal,requestId:request.boxedLogRequestId, authorize: () => authorize(host, request) });
     const value = encodeStorageValue(result);
     if (Buffer.byteLength(JSON.stringify(value)) > 32 * 1024 * 1024) throw failure('too-large', '响应超过读取上限，请分批操作。', 413);
     return { value };
@@ -136,7 +110,7 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
     let args;
     try { args = decodeStorageValue(body.args); } catch { throw failure('invalid-request', '切换数据无法无损解码。', 400); }
     if (!args || Array.isArray(args) || typeof args !== 'object' || Object.keys(args).some((key) => !['id','after','rows','manifest'].includes(key))) throw failure('invalid-request', '切换参数无效。', 400);
-    const result = await getWorker().call('_transfer', [body.action,args], owner, { signal, authorize: () => authorize(host,request) });
+    const result = await getWorker().call('_transfer', [body.action,args], owner, { signal,requestId:request.boxedLogRequestId, authorize: () => authorize(host,request) });
     return { value: encodeStorageValue(result) };
   }, '_transfer'));
   router.post('/batch-transfer', route(async (request, owner, signal, describe) => {
@@ -148,10 +122,10 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
     try { args = decodeStorageValue(body.args); validateBatchCall(body.action, args, 'sqlite'); }
     catch { throw failure('invalid-request', '分批迁移方法、方向或参数无效。', 400); }
     describe({operation:body.action,taskId:body.action==='begin'?args[0]?.id:args[0],...(body.action==='begin'?{kind:args[0]?.kind??'switch',from:args[0]?.from,to:args[0]?.to}:{})});
-    const result = await getWorker().call('_batchTransfer', [body.action, args], owner, { signal, authorize: () => authorize(host, request) });
+    const result = await getWorker().call('_batchTransfer', [body.action, args], owner, { signal,requestId:request.boxedLogRequestId, authorize: () => authorize(host, request) });
     const value = encodeStorageValue(result);
     if (Buffer.byteLength(JSON.stringify(value)) > 32 * 1024 * 1024) throw failure('too-large', '迁移响应超过读取上限。', 413);
     return { value };
   }, '_batchTransfer'));
-  return { close: async () => { clearInterval(maintenance);if (worker) await worker.close();if(logger)await logger.tail; } };
+  return { close: async () => { clearInterval(maintenance);if (worker) await worker.close();await logs.idle();if(logger)await logger.tail; } };
 }
