@@ -2,15 +2,13 @@
 
 为[箱装辣白菜前端扩展](https://github.com/Yuyayun/boxed-lllllabc)提供可选的服务器备份存储（SQLite）。前后端分仓库、分别安装。
 
-**最新正式版：1.0.5** · [正式版下载](https://github.com/Yuyayun/boxed-lllllabc-server/releases/tag/v1.0.5)。配合前端完善删除和连续修改后的恢复，核对实际保存结果，并保护新版待确认记录。
+**最新正式版：1.0.5-fix** · [正式版下载](https://github.com/Yuyayun/boxed-lllllabc-server/releases/tag/v1.0.5-fix)。配合前端完善保存核对、旧记录接续和恢复过程日志，保留已有备份。
 
-**开发补修：1.0.5-fix.1，尚未发布。** 完善线程故障、任务分类和日志写入失败的终端提示，合并重复与高频记录；配套前端补记恢复的关键节点。普通成功日志仍每分钟最多一条，无逐楼层日志。SQLite schema 4、协议 6 均不变，旧前端仍可连接。详见[运行日志验收](docs/acceptance/2026-11-25-runtime-log-fix.md)。
-
-同后缀另同步保存收尾核对模块，配合前端修复正常收发后持续黄灯，以及可确认的旧待确认记录积压。原记录不改写，数据库格式和条件核销保护不变；详见[保存收尾验收](docs/acceptance/2026-11-25-pending-finalization.md)。
+本版合并此前的日志与保存核对补修，改进故障原因和恢复过程记录，减少重复日志，并配合前端接续可确认的旧待确认记录。建议与前端 1.0.5-fix 一并更新，现有备份保留，无需清库或重新迁移。SQLite schema 4、协议 6 和日志保留规则不变，旧前端仍可连接。详见[更新日志](CHANGELOG.md)、[运行日志验收](docs/acceptance/2026-11-25-runtime-log-fix.md)及[保存收尾验收](docs/acceptance/2026-11-25-pending-finalization.md)。
 
 只安装前端即可使用浏览器本地备份。安装本插件后，不会自动切换位置或迁移数据；需要使用服务器存储时，再到前端确认切换。
 
-请与前端 1.0.5 配套更新。SQLite schema 仍为 4，存储协议仍为 6，原备份无需清库或重新迁移。实现与验证见[本次验收](docs/acceptance/2026-11-24-pending-recovery.md)及[正式发布核对](docs/acceptance/release-1.0.5.md)。
+建议与前端 1.0.5-fix 配套更新。SQLite schema 仍为 4，存储协议仍为 6，原备份无需清库或重新迁移。实现与验证见[本次验收](docs/acceptance/2026-11-24-pending-recovery.md)及[正式发布核对](docs/acceptance/release-1.0.5-fix.md)。
 
 本版没有增加修改酒馆源码的开关。删除捕获与恢复由前端独立完成，后端只提供对应的存储和条件核销能力。
 
@@ -27,7 +25,7 @@
 
 ## 安装
 
-先停止酒馆。从正式发布页面下载 `boxed-lllllabc-server-v1.0.5.zip`，解压后将其中的 `boxed-lllllabc-server` 目录放到：
+先停止酒馆。从正式发布页面下载 `boxed-lllllabc-server-v1.0.5-fix.zip`，解压后将其中的 `boxed-lllllabc-server` 目录放到：
 
 ```text
 plugins/boxed-lllllabc-server

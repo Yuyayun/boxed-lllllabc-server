@@ -102,7 +102,7 @@ export async function writeBackupRecords(session, { chatKey, store, rows, meta =
   if (!replace && second.done && !first.done) {
     if (!sourceUnchanged() || !validateSource()) throw backupFailure('来源聊天已经变化，已有备份已保留。', 'backup-source-changed');
     try { return await session.applyBackupPatch({ chatKey, store, rows: first.value, meta, nativeProof,...backupVersionOptions(state, store, true) }); }
-    catch (error) { if (error instanceof TypeError || ['AbortError','TimeoutError'].includes(error.name)) throw backupFailure('备份仍保持完整，本次更新结果待核对。', 'outcome-unknown'); throw error; }
+    catch (error) { if (error.backupTransactionOutcome !== 'aborted' && (error instanceof TypeError || ['UnknownError','AbortError','TimeoutError'].includes(error.name) || ['unknown','committed'].includes(error.backupTransactionOutcome))) throw Object.assign(backupFailure('本次备份更新结果待核对，请先重新检查，不要重复提交。', 'outcome-unknown'), { cause: error, backupTransactionOutcome: error.backupTransactionOutcome }); throw error; }
   }
   const job = await session.beginBackupWrite({ chatKey, store, count: rows.length, ...backupVersionOptions(state, store, true), replace, meta,nativeProof });
   let committing = false;
@@ -118,7 +118,7 @@ export async function writeBackupRecords(session, { chatKey, store, rows, meta =
     catch (error) {
       const receipt = await session.getBackupWriteStatus(job.id).catch(() => null);
       if (receipt?.state === 'committed') return receipt;
-      if (!receipt || ['outcome-unknown', 'cancelled'].includes(error.code) || ['AbortError', 'TimeoutError'].includes(error.name)) throw backupFailure('备份仍保持完整，本次更新结果待核对。', 'outcome-unknown');
+      if (!receipt || (error.backupTransactionOutcome !== 'aborted' && (['outcome-unknown', 'cancelled'].includes(error.code) || ['UnknownError','AbortError', 'TimeoutError'].includes(error.name) || ['unknown','committed'].includes(error.backupTransactionOutcome)))) throw Object.assign(backupFailure('本次备份更新结果待核对，请先重新检查，不要重复提交。', 'outcome-unknown'), { cause: error, backupTransactionOutcome: error.backupTransactionOutcome });
       committing = false; throw error;
     }
   } catch (error) {

@@ -37,6 +37,8 @@ export function filterValidStoreRecords(records, storeName) {
 
 export function describeStorageFailure(error) {
   const errorCode=error?.storageErrorCode??error?.code;
+  if (errorCode === 'outcome-unknown') return { type: 'unknown', shortText: '备份结果待核对', detail: error.detail ?? error.message };
+  if (['backup-local-paused', 'backup-control-unavailable'].includes(errorCode)) return { type: 'database', shortText: '本地备份暂时暂停', detail: error.detail ?? error.message };
   if(['backup-client-upgrade-required','backup-database-blocked','backup-database-timeout'].includes(errorCode))return {
     type:'compatibility',code:errorCode,shortText:errorCode==='backup-client-upgrade-required'?'前端扩展需要更新':'本地备份暂不可用',detail:error.detail??error.message,
   };
@@ -50,7 +52,7 @@ export function describeStorageFailure(error) {
   return {
     type: "database",
     shortText: "备份不可用",
-    detail: error?.message || "浏览器本地备份数据库暂时无法读写。",
+    detail: error?.detail || error?.message || "浏览器本地备份数据库暂时无法读写。",
   };
 }
 

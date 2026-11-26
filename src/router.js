@@ -83,7 +83,7 @@ export function installRoutes(router, { host, hostError, createWorker = (file) =
   maintenance=setInterval(()=>{if(logger)void logger.cleanup({cursor:cleanupCursor,maxFiles:2}).then(result=>{cleanupCursor=result.cursor??0;}).catch(()=>logs.failed());},60000);maintenance.unref();
   router.get('/status', route(async (request, owner, signal) => {
     void logs.probe();
-    return {pluginVersion: '1.0.5-fix.1', state:'connected',database:await getWorker().call('_status',[],owner,{signal,requestId:request.boxedLogRequestId,authorize:()=>authorize(host,request)})};
+    return {pluginVersion: '1.0.5-fix', state:'connected',database:await getWorker().call('_status',[],owner,{signal,requestId:request.boxedLogRequestId,authorize:()=>authorize(host,request)})};
   }, '_status'));
   router.post('/operation', route(async (request, owner, signal, describe) => {
     const body = request.body;

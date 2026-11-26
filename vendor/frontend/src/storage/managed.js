@@ -30,17 +30,18 @@ export function createManagedStorage({ control, adapters, locks = globalThis.nav
 }
 
 export function createOperationGate() {
-  let paused = false, running = 0;
+  let running = 0;
+  const pauses = new Set();
   const waiters = [];
   return {
     async run(operation) {
-      if (paused) throw new Error("切换备份位置期间操作已锁定。");
+      if (pauses.size) throw new Error("备份存储操作期间操作已锁定。");
       running += 1;
       try { return await operation(); }
       finally { if (--running === 0) waiters.splice(0).forEach((resolve) => resolve()); }
     },
-    async pause() { paused = true; if (running) await new Promise((resolve) => waiters.push(resolve)); },
-    resume() { paused = false; },
-    isPaused: () => paused,
+    async pause(reason = 'storage') { pauses.add(reason); if (running) await new Promise((resolve) => waiters.push(resolve)); },
+    resume(reason = 'storage') { pauses.delete(reason); },
+    isPaused: () => pauses.size > 0,
   };
 }
